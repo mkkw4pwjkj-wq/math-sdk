@@ -19,11 +19,11 @@ if __name__ == "__main__":
 
     # Diagnostic run size (requested): large enough to see max_royale's payout
     # spread and an Ascending-Wild doublings-per-spin distribution, still well
-    # short of SPEC.md's real counts (base 1_000_000 / enhancer 200_000 /
+    # short of SPEC.md's real counts (base 1_000_000 / mystery_enhancer 200_000 /
     # sutton_spins 500_000 / max_royale 200_000), which need run_optimization on.
     num_sim_args = {
         "base": 50_000,
-        "enhancer": 20_000,
+        "mystery_enhancer": 20_000,
         "sutton_spins": 10_000,
         "max_royale": 1_000,
     }

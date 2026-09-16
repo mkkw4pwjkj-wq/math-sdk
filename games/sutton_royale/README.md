@@ -1,9 +1,107 @@
 # Sutton Royale - math-sdk implementation notes
 
-This implements SPEC.md **v3**'s wild/paytable rules (repo root, §16 for the
-v2→v3 delta) with **v4 lifecycle fixes layered on top** - see "v4", "v4.1",
-and "v4.2" below. SPEC.md's own text is still v3; the delta is documented
-here pending a dedicated SPEC pass.
+This implements SPEC.md **v5** (repo root - §17 covers the v3→v5 delta: wild
+lifecycle, then trigger odds/economics; §5/§6/§7.4-7/§8/§10/§11/§12 carry the
+current numbers directly). This file's own "v4"/"v4.1"/"v4.2" sections below
+predate that SPEC.md update and are kept as the engineering diary for the
+wild-lifecycle half of that delta.
+
+## v5: trigger-odds and pricing revision
+
+Structural work on top of v4.2's wild-lifecycle fixes - nothing in the
+multiplier engine, wild behaviour, fall rules, or paytable changes here, only
+reel-strip scatter/symbol weights, each tier's target economics, two modes'
+pricing, and two authored distributions:
+
+- **Reel strips regenerated** (`reels/BR0.csv`, `reels/FR0.csv`, now 1,000
+  entries instead of 100 so the new per-mille weights stay exact integers).
+  Any-bonus odds moved from 1 in 386 to 1 in 183.
+- **Every tier's own max-win cap is now independently reachable**, not just
+  Hidden's - `game_config._tier_pair()` splits each tier's trigger quota into
+  an ordinary branch and a tiny forced-max-win branch (the same
+  all-ascending-wild-plus-FRWCAP forcing already used for Hidden), at a
+  *conditional* frequency (1 in N, given that tier already triggered):
+  Regular 1 in 200,000, Super 1 in 25,000, Hidden 1 in 3,000.
+- **Max Royale's cost drops 1,500x -> 1,000x** (`MAX_ROYALE_COST`) - a pure
+  price cut, its internal rates/caps are untouched. It was already the
+  closest mode to its old target, so this alone should close most of the
+  remaining gap.
+- **The plain, reel-scatter-driven `enhancer` mode is retired.** Its
+  replacement, `mystery_enhancer` (5x/spin, `reels/ENH0.csv` deleted -
+  no longer referenced anywhere), triggers tiers through its own authored
+  per-spin lottery (`MYSTERY_ENHANCER_TIER_QUOTA`) instead of a
+  boosted-scatter reel - structurally identical to the pattern
+  `_sutton_spins_mode()` already used, not a new mechanic. Every spin,
+  lottery hit or not, still resolves an ordinary base-type reveal off the
+  same BR0-style economics, so "nothing" isn't a dead spin.
+- **Sutton Spins' authored tier mix rebuilt** against the new tier averages
+  (`SUTTON_SPINS_TIER_QUOTA`), same 50x cost, same no-separate-wincap
+  structure as before.
+- **`game_optimization.py` rebuilt to match** (criteria renamed/expanded,
+  RTP splits derived from the same constants game_config.py uses so the two
+  files can't drift apart) even though `run_optimization` stays off this
+  pass - it's next. Also fixed a latent bug in this file, unrelated to this
+  pass's changes: `ConstructConditions(rtp=0.0)` alone (no `av_win`/`hr`)
+  fails that class's own "at least 2 of {rtp, av_win, hr}" assertion - it had
+  been that way since before this pass and was never caught because
+  `OptimizationSetup` was never actually instantiated (`run_optimization`
+  has been `False` every pass so far). Fixed by passing `av_win=0.0`
+  alongside for every zero-win criteria.
+
+**Re-ran the same batch** (base 50,000 / mystery_enhancer 20,000 /
+sutton_spins 10,000 / max_royale 1,000, optimization off):
+
+| Mode | RTP (raw x) | Target (0.977×cost) | Any-win | Bonus-award | Bonus count |
+|---|---|---|---|---|---|
+| base | 2.15x | 0.98x | 22.26% | 0.55% | 275 |
+| mystery_enhancer | 7.78x | 4.89x | 79.15% | 2.97% | 594 |
+| sutton_spins | 29.77x | 48.85x | 83.83% | 22.60% | 2,260 |
+| max_royale | 646.26x | 977x | 100% | 100% | 1,000 |
+
+Bonus-award rates match their authored/reel-derived quotas essentially
+exactly (base 0.55% vs 1/211+1/1529+1/12107=0.5476%; mystery_enhancer 2.97%
+vs its own lottery sum 2.968%; sutton_spins 22.60% vs 22.60% authored) -
+confirms the reel regeneration and quota wiring are both correct.
+
+**Average full-round payout per bonus tier** (pooled base+mystery_enhancer+
+sutton_spins, n=4,129 tier triggers):
+
+| Tier | n | Avg payout | Target | Gap |
+|---|---|---|---|---|
+| regular | 1,991 | 95.98x | 105x | 0.91x (9% cold) |
+| super | 690 | 216.88x | 273x | 0.79x (21% cold) |
+| super_hidden | 1,448 | 553.01x | 720x | 0.77x (23% cold) |
+
+All three within about a quarter of target - closer than any prior pass,
+consistent with no explicit tolerance being requested this time (structural
+correctness, not final tuning, was the goal).
+
+**Cap-hit frequency per tier trigger, per mode** (at this diagnostic's scale,
+each `wincap_<tier>` criteria's quota floors to exactly 1 simulated instance
+regardless of how small - `max(int(num_sims * quota), 1)` in
+`src/state/run_sims.py` - so these counts reflect the forcing mechanism
+firing on its guaranteed minimum allocation, not yet the true 1-in-N
+production odds, which only converge at full simulation scale):
+
+| Mode/tier | Cap hits / triggers |
+|---|---|
+| base/regular | 1/200 |
+| base/super | 1/54 |
+| base/super_hidden | 1/21 |
+| mystery_enhancer/regular | 0/414 |
+| mystery_enhancer/super | 2/137 |
+| mystery_enhancer/super_hidden | 1/43 |
+| sutton_spins/regular, super, super_hidden | 0 (no dedicated wincap branch - unchanged from earlier passes) |
+| max_royale/super_hidden | 12/1,000 |
+
+Every mode/tier that has a `wincap_<tier>` branch produced at least one exact
+20,000x hit, confirming each is wired and converges - the actual population
+frequency needs the real production-scale run to verify.
+
+**Cascade-length distribution** stays healthy (fall-speed rules were
+untouched this pass): max chain length across 197,927 spins is 15 (hard cap),
+decaying smoothly with the same small bump around cascade 5 seen since v4.2,
+no sign of the v4.1 cascade-10 clustering returning.
 
 ## v4.2: fall-speed revert + rates/caps pulled back - within ~3x of target
 

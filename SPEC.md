@@ -1,7 +1,9 @@
-# Sutton Royale — Math Specification v3
+# Sutton Royale — Math Specification v3 (+ v4/v5 amendments)
 
 Amends v2 in place: §3/§4/§6/§7 updated below, everything else unchanged.
-See §16 for the v2→v3 delta (§15 covers v1→v2).
+See §16 for the v2→v3 delta (§15 covers v1→v2), §17 for v3→v5 (wild
+lifecycle, then trigger odds/economics) - §5/§6/§7.4-7/§8/§10/§11/§12 below
+are already updated in place to v5's numbers.
 
 Target platform: Stake Engine (math-sdk + frontend-sdk)
 
@@ -66,20 +68,22 @@ satisfied without coarsening the table.
 
 ## 5. Reel strips
 
-Entries per 100. Roughly 5:1 spread from lowest to highest — premiums need real
-scarcity in an all-ways game or they land constantly across six reels.
+v5: entries per 1,000 (was per 100 - kept every weight an exact integer at
+the new scatter rate rather than rounding). Scatter went from 2 in 100 (1 in
+386 for any bonus) to 23 in 1,000 (1 in 183 for any bonus) - the old rate was
+roughly twice as rare as genre norms.
 
 ```
 symbol   reels 2-6   reel 1
-L1          20         17
-L2          18         16
-L3          16         15
-L4          13         13
-H4          11         12
-H3           9         11
-H2           7          9
-H1           4          5
-scatter      2          2
+L1          197        167
+L2          180        160
+L3          160        150
+L4          130        130
+H4          110        120
+H3           90        110
+H2           70         90
+H1           40         50
+scatter      23         23
 ```
 
 Reel 1 carries more premiums than the rest. Nothing pays without reel 1, so
@@ -103,11 +107,14 @@ is the fix.
 
 ```
                     base  regular  super  hidden  maxroyale
-empty                82%    72%     66%     55%      48%
-plain wild            6%     8%      9%     10%      10%
-Static Wild           9%    14%     16%     19%      21%
-Ascending Wild        3%     6%      9%     16%      21%
+empty                82%    64%     58%     48%      42%
+plain wild            6%     9%     10%     11%      11%
+Static Wild           9%    19%     21%     24%      26%
+Ascending Wild        3%     8%     11%     17%      21%
 ```
+
+(Regular/super/hidden/maxroyale updated post-v3 to fund a feature's payout
+from crate volume rather than persistence — see §16. Base is unchanged.)
 
 Static Wild multiplier value on landing:
 
@@ -143,21 +150,26 @@ instead of stacked systems. No bank, no separate running total.
 
 ```
 base          50x
-regular      100x
-super        150x
-hidden       250x
-maxroyale    350x
+regular      120x
+super        190x
+hidden       300x
+maxroyale    420x
 ```
 
-5. **In features, wilds are sticky**: a landed wild holds its reel position
-   for the remainder of the feature, but its value **resets to whatever it
-   landed with at the start of every subsequent spin**. An Ascending Wild can
-   still double within that spin's own cascades - it does not carry a
-   compounded value forward from one spin to the next. (v2 had it keep
-   doubling across spins with no reset; combined with landing often, that's
-   what produced the saturation - see §15.)
-6. **In base game, wilds clear at spin end.** Nothing persists between base
-   spins.
+5. **Wilds fall.** Both wild types drop from the top bar, fall one row per
+   tumble, and remove themselves after 5 tumbles (`max_wild_tumbles`) - in
+   base game and every feature alike, no exception. Nothing persists between
+   spins anywhere. (v2/v3 kept a wild on the board indefinitely, sticky
+   across an entire feature; a wild that never leaves and substitutes for
+   anything guarantees a win on every subsequent tumble, so a chain could
+   only end when every wild happened to age out some other way - it
+   couldn't, so chains ran past 90 tumbles. This is the actual fix, not a
+   smaller cap - see §16.)
+6. **Hard cap: 15 cascades per spin**, independent of rule 5 - a backstop,
+   not the primary termination mechanism.
+7. A feature's richer economics come from **top-bar fill rate and total-cap
+   headroom only** (§6, this section's rule 4) - never from wilds persisting
+   or falling more slowly than base. Both were tried and reverted; see §16.
 
 The total cap in rule 4 is not optional. An uncapped accumulating multiplier in
 a precomputed game produces a mode that hits max win on every simulation.
@@ -167,15 +179,22 @@ a precomputed game produces a mode that hits max win on every simulation.
 Triggered by scatter count. One scatter weight produces all three tiers — the
 ratios between them are fixed by the binomial, not chosen independently.
 
+v5: scatter weight raised (§5), and each tier's target average payout is
+deliberately skewed *above* what pure rarity alone would give — a tier 57×
+rarer than the one below it pays roughly 2.6× more, not 57× more:
+
 ```
-                    regular    super      hidden
-scatters               4          5          6+
-odds              1 in 386  1 in 3,634  1 in 39,800
+                    regular    super       hidden
+scatters               4          5           6+
+odds              1 in 211  1 in 1,529  1 in 12,107
 free spins            10         12          15
-wild rate            20%        25%         35%
-avg payout           220x       512x        995x
-median payout         62x       140x        260x
+avg payout           105x       273x        720x
+cap frequency    1 in 200,000  1 in 25,000  1 in 3,000
 ```
+
+Cap frequency is conditional — 1 in N of that tier's own triggers, not of all
+spins — and applies independently to every tier. Previously only Hidden could
+reach the 20,000× cap; now every tier can, at its own stated rate.
 
 Retrigger on 3+ scatters awards 5 extra spins. **Hard cap 40 total spins.**
 
@@ -205,11 +224,11 @@ without distorting the reel weights.
 Four. Do not add a fifth.
 
 ```
-mode            cost     notes
-base              1x     full game, all tiers reachable
-enhancer          3x     scatter weight x3.65
-sutton_spins     50x     single spin, authored tier mix
-max_royale    1,500x     forced 6-scatter entry, 15 spins, max conditions
+mode                 cost     notes
+base                   1x     full game, all tiers reachable
+mystery_enhancer       5x     authored per-spin lottery (v5 - replaces the boosted-reel "enhancer")
+sutton_spins          50x     single spin, authored tier mix
+max_royale         1,000x     forced 6-scatter entry, 15 spins, max conditions (v5 - was 1,500x)
 ```
 
 Every mode must satisfy `cost × 0.977 = average payout`.
@@ -218,36 +237,77 @@ Standard Bonus (225×) and Super Bonus (525×) buys are deliberately omitted.
 Hel's Domain — the closest published comparator — ships without them. At very
 high volatility the mid-priced buy gets squeezed out. Consider for v2, not now.
 
-### Sutton Spins — authored distribution
+### mystery_enhancer — authored lottery (v5, replaces the boosted-reel enhancer)
 
-Because outcomes are precomputed, this mode's tier mix is written directly
-rather than derived from a boosted scatter weight.
+A boosted-scatter reel (3.65× weight) was the v1-v4 approach. v5 replaces it
+with a per-spin authored lottery, same pattern as Sutton Spins below - every
+spin still resolves an ordinary base-type reveal off the shared reel (§5), so
+"nothing" isn't a dead spin, it still pays normal base wins:
 
 ```
 outcome        chance    odds      contribution
-Super Hidden    2.03%   1 in 49       20.2x
-Super           3.00%   1 in 33       15.4x
-Regular         6.00%   1 in 17       13.2x
-nothing        88.97%      -             -
-                                     ------
-                                      48.8x
+Hidden          0.119%  1 in 842      0.85x
+Super           0.475%  1 in 211      1.30x
+Regular         2.374%  1 in 42       2.49x
+nothing        97.032%     -            -
+                                     -----
+                                      4.64x
 ```
 
-Budget is 50 × 0.977 = 48.85×. Weighted so Super Hidden is the largest single
+Budget is (5 × 0.977) − 0.241 = 4.644× (0.241 is base's own paytable-only
+contribution, present here too since every spin resolves a normal reveal
+regardless of the lottery). Tier ratio compressed to 20:4:1, well short of
+the natural 57:8:1 the shared reel odds would give - deliberately, so a
+5x-cost mode doesn't need bonus odds 57x rarer than a 1x spin to feel worth
+the price.
+
+### Sutton Spins — authored distribution
+
+Because outcomes are precomputed, this mode's tier mix is written directly
+rather than derived from a boosted scatter weight. Rebuilt in v5 against the
+new tier averages (§8):
+
+```
+outcome        chance    odds      contribution
+Hidden          3.00%   1 in 33       21.6x
+Super           4.00%   1 in 25       10.9x
+Regular        15.60%   1 in  6       16.4x
+nothing        77.40%      -             -
+                                     ------
+                                      48.9x
+```
+
+Budget is 50 × 0.977 = 48.85×. Weighted so Hidden is the largest single
 contributor — it is the only tier that cannot be bought outright.
 
 ### Max Royale
 
 Guaranteed Super Hidden entry. 15 spins, 42% wild rate, minimum landed
-multiplier 5×, total multiplier cap 750×.
+multiplier 5×, total multiplier cap 420x (§7.4).
 
-Budget 1,500 × 0.977 = 1,465×. Target roughly 1 in 54 reaching the 20,000× cap.
+Cost dropped 1,500x → 1,000x in v5 - a pure price cut, no change to the
+internal rates/caps. Budget 1,000 × 0.977 = 977×. Target 1 in 80 reaching the
+20,000× cap (§8) - unconditional, since every spin here is already Hidden.
 
 **This mode saturated at cap on 100% of sims twice during v1.** Both times the
 cause was an uncapped accumulating multiplier. Verify a spread of payouts here
 before trusting any other number.
 
 ## 11. RTP allocation
+
+v5 figures (see §17 for what changed and why):
+
+```
+component            RTP      odds          avg payout
+base game          24.10%       -               -
+regular bonus      49.80%   1 in 211          105x
+super bonus        17.90%   1 in 1,529        273x
+super hidden        6.00%   1 in 12,107       720x
+                   ------
+                   97.80%
+```
+
+Superseded table (pre-v5, kept for reference only):
 
 ```
 component            RTP      odds          avg payout
@@ -261,12 +321,16 @@ super hidden        2.50%   1 in 39,800       995x
 
 ## 12. Volatility targets
 
+v5: any-bonus odds moved from 1 in 386 to 1 in 183 (§5/§8), so median
+spins-to-bonus and the 500-spin hit chance move with it. RTP split is
+unchanged by design - the new tier averages (§8) were chosen to preserve it.
+
 ```
 per-spin standard deviation        ~50-60
-median spins to a bonus              268
-chance of a bonus within 500 spins  72.6%
+median spins to a bonus              127
+chance of a bonus within 500 spins  93.5%
 RTP in base game                    24.1%
-RTP in features                     73.6%
+RTP in features                     73.7%
 ```
 
 ## 13. Hard constraints
@@ -343,3 +407,47 @@ fix, not a smaller cap:
 
 Unchanged: RTP 97.70%, 20,000× cap, the three scatter tiers and their odds,
 all bet mode prices, reel strips (§5), that wilds never appear in reel strips.
+
+## 17. What changed from v3
+
+Two rounds of change since v3, on two different axes - wild lifecycle, then
+trigger odds/economics. Both landed after overshoots; see README.md for the
+full engineering diary (live debugging, exact diagnostic numbers per attempt).
+This section covers only the resulting rule changes.
+
+**Wild lifecycle.** v3's sticky-in-features wild (§7.5 pre-v5) never cleared
+and substitutes for anything, so a wild pair on the board guaranteed a win on
+every subsequent tumble - cascade chains had no way to terminate and some ran
+past 90 tumbles. Fix: wilds fall (§7.5) and a hard 15-cascade cap exists
+independently (§7.6) - the tumble loop's iteration guard §13 always called
+for but never implemented until this pass. Falling alone collapsed a
+feature's payout along with the runaway chains (a 15-spin Hidden became
+fifteen individually short-lived base spins), so feature economics were
+rebuilt on fill rate and cap headroom instead (§6, §7.4) - explicitly *not*
+on wilds persisting or falling more slowly than base, both of which were
+tried and reverted after a slowed-fall attempt was found to be sustaining a
+third of Max Royale's cascades by itself (doublings compound exponentially
+over however long a wild survives, so a "mild" 2× lifespan lever wasn't
+mild).
+
+| | v3 | v4 (current) |
+|---|---|---|
+| Wild lifespan | indefinite (sticky in features, cleared per-spin in base) | 5 tumbles, base and features alike |
+| Cascades per spin | uncapped | hard cap 15 |
+| Feature payout source | wild persistence (reset-to-landed value) | top-bar fill rate + total-mult cap |
+| Total mult cap (regular/super/hidden/maxroyale) | 100/150/250/350 | 120/190/300/420 |
+
+**Trigger odds and economics (v5).** Reel strips, tier averages, mode
+pricing, and two authored distributions - see §5, §8, §10, §11 for the
+current numbers and §16 above for the table this replaced.
+
+| | v3/v4 | v5 (current) |
+|---|---|---|
+| Any-bonus odds | 1 in 386 | 1 in 183 |
+| enhancer mode | 3x, boosted-scatter reel | `mystery_enhancer`, 5x, authored lottery |
+| Max Royale cost | 1,500x | 1,000x |
+| Every tier's cap reachable | Hidden only | Regular, Super, and Hidden independently |
+
+Unchanged across both: the paytable (§4), the multiplier engine's core rules
+(doubling, 512× per-wild ceiling, once-per-spin summed application - §7.1-4),
+that wilds never appear in reel strips.

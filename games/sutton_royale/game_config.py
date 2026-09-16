@@ -43,6 +43,31 @@ from crate *volume* only (BONUS_TIERS rates, pulled back to roughly
 halfway between v3's original and the overshoot) plus each tier's
 total_mult_cap raised independently of base's 50x.
 
+v5: trigger-odds and pricing revision. Nothing in the multiplier engine,
+wild behaviour, fall rules, or paytable changes here - only the reel
+strips' scatter/symbol weights, each tier's target economics, two modes'
+pricing, and two authored distributions:
+  * Reel strips (BR0/FR0) regenerated at a slightly less rare scatter
+    weight (1 in 386 -> roughly 1 in 183 for any bonus), 1000-entry strips
+    so the per-mille weights stay exact integers (TIER_TRIGGER_ODDS).
+  * Regular/Super/Hidden's own target average payout is raised above what
+    pure rarity alone would give (TIER_AVG_PAYOUT) - rarer tiers pay more
+    per unit of rarity, not just proportionally.
+  * Every tier's own max-win cap is now independently reachable
+    (TIER_CAP_FREQ - a "1 in N, given that tier already triggered" forcing
+    layer, split out of that tier's own quota via _tier_pair()), not just
+    Max Royale's.
+  * Max Royale's cost drops 1,500x -> 1,000x (MAX_ROYALE_COST) - its own
+    internal economics (rates, caps) are untouched, so this is a pure
+    price cut, and it was already the closest mode to its old target.
+  * The plain, reel-scatter-driven "enhancer" mode is retired. Its
+    replacement, `mystery_enhancer` (5x/spin), triggers tiers via its own
+    authored per-spin lottery (MYSTERY_ENHANCER_TIER_QUOTA) instead of a
+    boosted-scatter reel - structurally the same pattern `_sutton_spins_mode`
+    already used, not a new mechanic.
+  * Sutton Spins' own authored tier mix is rebuilt against the new tier
+    averages (SUTTON_SPINS_TIER_QUOTA), same 50x cost.
+
 See README.md for the engineering decisions made to turn SPEC.md's design
 language into precomputable game logic.
 """
@@ -89,6 +114,29 @@ LADDER_CAP = 512  # per-wild value ceiling (only the Ascending Wild ever grows t
 MAX_WILD_TUMBLES = 5  # a wild removes itself after this many tumbles on the board
 MAX_CASCADES_PER_SPIN = 15  # hard backstop, independent of the wild age-out fix
 MAX_TOTAL_FREESPINS = 40
+
+# v5 trigger-odds/economics revision. Base-game-level tier trigger odds (1 in N,
+# from the new BR0/FR0 reel strips - "any bonus" is their harmonic-ish sum, 1 in
+# ~183) and each tier's target average payout, deliberately skewed above pure
+# rarity (a tier that's 57x rarer than the one below it pays roughly 2.6x more,
+# not 57x more - see README.md for the reasoning).
+TIER_TRIGGER_ODDS = {"regular": 211, "super": 1529, "super_hidden": 12107}
+TIER_AVG_PAYOUT = {"regular": 105, "super": 273, "super_hidden": 720}
+
+# Every tier's max-win cap is independently reachable, at these conditional
+# frequencies (1 in N, *given* that tier already triggered) - split out of that
+# tier's own quota by _tier_pair(), not layered on top of it.
+TIER_CAP_FREQ = {"regular": 200_000, "super": 25_000, "super_hidden": 3_000}
+MAX_ROYALE_CAP_FREQ = 80  # unconditional - every Max Royale spin is already super_hidden
+
+MAX_ROYALE_COST = 1000.0  # was 1,500x; internal economics (rates/caps) unchanged, pure price cut
+
+# mystery_enhancer: authored per-spin lottery replacing a boosted-scatter reel -
+# same pattern _sutton_spins_mode() already uses, just its own odds/cost.
+MYSTERY_ENHANCER_TIER_QUOTA = {"regular": 0.02374, "super": 0.00475, "super_hidden": 0.00119}
+MYSTERY_ENHANCER_COST = 5.0
+
+SUTTON_SPINS_TIER_QUOTA = {"regular": 0.1560, "super": 0.0400, "super_hidden": 0.0300}
 
 
 class GameConfig(Config):
@@ -166,7 +214,7 @@ class GameConfig(Config):
         self.basegame_total_mult_cap = BASEGAME_TOTAL_MULT_CAP
         self.bonus_tiers = BONUS_TIERS
 
-        reels = {"BR0": "BR0.csv", "FR0": "FR0.csv", "ENH0": "ENH0.csv", "FRWCAP": "FRWCAP.csv"}
+        reels = {"BR0": "BR0.csv", "FR0": "FR0.csv", "FRWCAP": "FRWCAP.csv"}
         self.reels = {}
         for r, f in reels.items():
             self.reels[r] = self.read_reels_csv(os.path.join(self.reels_path, f))
@@ -174,84 +222,86 @@ class GameConfig(Config):
         self.padding_reels[self.basegame_type] = self.reels["BR0"]
         self.padding_reels[self.freegame_type] = self.reels["FR0"]
 
-        self.bet_modes = [self._base_mode(), self._enhancer_mode(), self._sutton_spins_mode(), self._max_royale_mode()]
+        self.bet_modes = [
+            self._base_mode(),
+            self._mystery_enhancer_mode(),
+            self._sutton_spins_mode(),
+            self._max_royale_mode(),
+        ]
 
     # ------------------------------------------------------------------
     # Bet mode construction
     # ------------------------------------------------------------------
-    def _tier_distributions(self, base_reel_id, quotas, extra_conditions=None):
-        """Build the four standard tier-triggering distributions shared by base/enhancer modes."""
-        dists = []
-        tier_scatters = {"regular": 4, "super": 5, "super_hidden": 6}
-        for tier, scatter_count in tier_scatters.items():
-            cond = {
-                "reel_weights": {
-                    self.basegame_type: {base_reel_id: 1},
-                    self.freegame_type: {"FR0": 1},
-                },
-                "scatter_triggers": {scatter_count: 1},
-                "forced_tier": tier,
-                "force_wincap": False,
-                "force_freegame": True,
-            }
-            if extra_conditions:
-                cond.update(extra_conditions)
-            dists.append(Distribution(criteria=f"fs_{tier}", quota=quotas[f"fs_{tier}"], conditions=cond))
+    def _tier_pair(self, tier, criteria_prefix, total_quota, cap_freq, extra_conditions=None):
+        """Split a tier's total trigger probability into its ordinary branch and a
+        tiny forced-max-win branch, so that tier's own cap is reachable at the
+        stated conditional frequency (1 in cap_freq, *given* the tier triggers at
+        all) - the same all-ascending-wild-plus-FRWCAP forcing technique used
+        everywhere else, just no longer confined to super_hidden."""
+        scatter_count = {"regular": 4, "super": 5, "super_hidden": 6}[tier]
+        wincap_quota = total_quota / cap_freq
+        natural_quota = total_quota - wincap_quota
 
-        wincap_cond = {
+        base_cond = {
             "reel_weights": {
-                self.basegame_type: {base_reel_id: 1},
+                self.basegame_type: {"BR0": 1},
+                self.freegame_type: {"FR0": 1},
+            },
+            "scatter_triggers": {scatter_count: 1},
+            "forced_tier": tier,
+            "force_freegame": True,
+        }
+        if extra_conditions:
+            base_cond.update(extra_conditions)
+
+        natural_cond = {**base_cond, "force_wincap": False}
+        wincap_cond = {
+            **base_cond,
+            "reel_weights": {
+                self.basegame_type: {"BR0": 1},
                 self.freegame_type: {"FR0": 1, "FRWCAP": 5},
             },
-            "scatter_triggers": {6: 1},
-            "forced_tier": "super_hidden",
             "force_wincap": True,
-            "force_freegame": True,
             "top_bar_override": {
                 "rates": {"empty": 0.0, "plain": 0.0, "static": 0.0, "ascending": 1.0},
                 "ascending_wild_values": {5: 1.0},
             },
         }
-        if extra_conditions:
-            wincap_cond.update(extra_conditions)
-        dists.append(
+        return [
+            Distribution(criteria=f"{criteria_prefix}_{tier}", quota=natural_quota, conditions=natural_cond),
             Distribution(
-                criteria="wincap",
-                quota=quotas["wincap"],
-                win_criteria=self.wincap,
-                conditions=wincap_cond,
-            )
-        )
-
-        zero_cond = {
-            "reel_weights": {self.basegame_type: {base_reel_id: 1}},
-            "force_wincap": False,
-            "force_freegame": False,
-        }
-        if extra_conditions:
-            zero_cond.update(extra_conditions)
-        dists.append(Distribution(criteria="0", quota=quotas["0"], win_criteria=0.0, conditions=zero_cond))
-
-        basegame_cond = {
-            "reel_weights": {self.basegame_type: {base_reel_id: 1}},
-            "force_wincap": False,
-            "force_freegame": False,
-        }
-        if extra_conditions:
-            basegame_cond.update(extra_conditions)
-        dists.append(Distribution(criteria="basegame", quota=quotas["basegame"], conditions=basegame_cond))
-
-        return dists
+                criteria=f"wincap_{tier}", quota=wincap_quota, win_criteria=self.wincap, conditions=wincap_cond
+            ),
+        ]
 
     def _base_mode(self):
-        quotas = {
-            "0": 0.7200,
-            "basegame": 0.2777,
-            "fs_regular": 0.00260,
-            "fs_super": 0.000275,
-            "fs_super_hidden": 0.0000226,
-            "wincap": 0.0001,
-        }
+        """Regular/Super/Hidden trigger at the new reel-driven odds
+        (TIER_TRIGGER_ODDS); each tier's own max-win cap is reachable at
+        TIER_CAP_FREQ. "0"/"basegame" fill the remainder, split in the same
+        ratio as before the odds changed."""
+        tier_total_quota = {tier: 1 / odds for tier, odds in TIER_TRIGGER_ODDS.items()}
+        remainder = 1.0 - sum(tier_total_quota.values())
+        zero_share, basegame_share = 0.7200, 0.2777  # prior split, preserved proportionally
+        split = zero_share / (zero_share + basegame_share)
+
+        dists = []
+        for tier in ("regular", "super", "super_hidden"):
+            dists += self._tier_pair(tier, "fs", tier_total_quota[tier], TIER_CAP_FREQ[tier])
+        dists.append(
+            Distribution(
+                criteria="0",
+                quota=remainder * split,
+                win_criteria=0.0,
+                conditions={"reel_weights": {self.basegame_type: {"BR0": 1}}, "force_wincap": False, "force_freegame": False},
+            )
+        )
+        dists.append(
+            Distribution(
+                criteria="basegame",
+                quota=remainder * (1 - split),
+                conditions={"reel_weights": {self.basegame_type: {"BR0": 1}}, "force_wincap": False, "force_freegame": False},
+            )
+        )
         return BetMode(
             name="base",
             cost=1.0,
@@ -260,40 +310,48 @@ class GameConfig(Config):
             auto_close_disabled=False,
             is_feature=True,
             is_buybonus=False,
-            distributions=self._tier_distributions("BR0", quotas),
+            distributions=dists,
         )
 
-    def _enhancer_mode(self):
-        # Scatter weight x3.65 (ENH0 reel) - regular bonus arrives ~1 in 106 while active.
-        quotas = {
-            "0": 0.6800,
-            "basegame": 0.3000,
-            "fs_regular": 0.00943,
-            "fs_super": 0.00100,
-            "fs_super_hidden": 0.0000822,
-            "wincap": 0.0003,
-        }
+    def _mystery_enhancer_mode(self):
+        """Replaces the plain, reel-scatter-driven "enhancer". Every spin still
+        resolves an ordinary base-type reveal (paytable + top-bar wild) off the
+        same BR0 reel as base mode - "nothing" isn't a dead spin, it's a normal
+        one - but tier-triggering is decided by this mode's own authored
+        per-spin lottery (MYSTERY_ENHANCER_TIER_QUOTA) instead of a
+        boosted-scatter reel, at odds well above the shared reel-driven ones.
+        Same _tier_pair() cap-reachability split as base."""
+        dists = []
+        for tier in ("regular", "super", "super_hidden"):
+            dists += self._tier_pair(tier, "fs", MYSTERY_ENHANCER_TIER_QUOTA[tier], TIER_CAP_FREQ[tier])
+        dists.append(
+            Distribution(
+                criteria="nothing",
+                quota=1.0 - sum(MYSTERY_ENHANCER_TIER_QUOTA.values()),
+                conditions={"reel_weights": {self.basegame_type: {"BR0": 1}}, "force_wincap": False, "force_freegame": False},
+            )
+        )
         return BetMode(
-            name="enhancer",
-            cost=3.0,
+            name="mystery_enhancer",
+            cost=MYSTERY_ENHANCER_COST,
             rtp=self.rtp,
             max_win=self.wincap,
             auto_close_disabled=False,
             is_feature=True,
             is_buybonus=False,
-            distributions=self._tier_distributions("ENH0", quotas),
+            distributions=dists,
         )
 
     def _sutton_spins_mode(self):
-        """Single spin, authored tier mix (not derived from a boosted scatter weight)."""
+        """Single spin, authored tier mix (not derived from a boosted scatter
+        weight) - rebuilt against the new tier averages, same 50x cost."""
         tier_scatters = {"regular": 4, "super": 5, "super_hidden": 6}
-        tier_quota = {"regular": 0.0600, "super": 0.0300, "super_hidden": 0.0203}
         dists = []
         for tier, scatter_count in tier_scatters.items():
             dists.append(
                 Distribution(
                     criteria=f"fs_{tier}",
-                    quota=tier_quota[tier],
+                    quota=SUTTON_SPINS_TIER_QUOTA[tier],
                     conditions={
                         "reel_weights": {
                             self.basegame_type: {"BR0": 1},
@@ -309,7 +367,7 @@ class GameConfig(Config):
         dists.append(
             Distribution(
                 criteria="nothing",
-                quota=0.8897,
+                quota=1.0 - sum(SUTTON_SPINS_TIER_QUOTA.values()),
                 conditions={
                     "reel_weights": {self.basegame_type: {"BR0": 1}},
                     "force_wincap": False,
@@ -332,7 +390,11 @@ class GameConfig(Config):
         """Guaranteed Super Hidden entry: 15 spins (Super Hidden's own default - no
         override needed), its own top-bar fill rates, total multiplier capped
         at 420x. Static/Ascending Wild value tables are unchanged from the
-        other tiers - only the fill rates differ for Max Royale."""
+        other tiers - only the fill rates differ for Max Royale. Cost dropped
+        1,500x -> 1,000x (v5, MAX_ROYALE_COST) - a pure price cut, no change to
+        the internal rates/caps above. The cap is reachable at 1 in
+        MAX_ROYALE_CAP_FREQ, unconditional (every spin here is already
+        super_hidden)."""
         override = {
             "rates": {"empty": 0.42, "plain": 0.11, "static": 0.26, "ascending": 0.21},
             "total_mult_cap": 420,
@@ -353,10 +415,11 @@ class GameConfig(Config):
                 "ascending_wild_values": {5: 1.0},
             }
         )
+        wincap_quota = 1.0 / MAX_ROYALE_CAP_FREQ
         dists = [
             Distribution(
                 criteria="wincap",
-                quota=0.0185,
+                quota=wincap_quota,
                 win_criteria=self.wincap,
                 conditions={
                     **common,
@@ -370,13 +433,13 @@ class GameConfig(Config):
             ),
             Distribution(
                 criteria="forced_super_hidden",
-                quota=0.9815,
+                quota=1.0 - wincap_quota,
                 conditions={**common, "force_wincap": False, "top_bar_override": override},
             ),
         ]
         return BetMode(
             name="max_royale",
-            cost=1500.0,
+            cost=MAX_ROYALE_COST,
             rtp=self.rtp,
             max_win=self.wincap,
             auto_close_disabled=False,
