@@ -21,15 +21,19 @@ from src.config.betmode import BetMode
 TIER_FS = {"regular": 10, "super": 12, "super_hidden": 15}
 
 # Top-bar behaviour per tier: orb_rate is the draw probability per bar position
-# while in the feature (remaining probability is "empty").
+# while in the feature (remaining probability is "empty"). bank_cap is the fix
+# for Max Royale's guaranteed-cap bug: the bank was previously unbounded.
 BONUS_TIERS = {
-    "regular": {"fs": 10, "bank_open": 0, "orb_rate": 0.41, "min_orb": 2},
-    "super": {"fs": 12, "bank_open": 10, "orb_rate": 0.53, "min_orb": 2},
-    "super_hidden": {"fs": 15, "bank_open": 25, "orb_rate": 0.71, "min_orb": 4},
+    "regular": {"fs": 10, "bank_open": 0, "orb_rate": 0.41, "min_orb": 2, "bank_cap": 150},
+    "super": {"fs": 12, "bank_open": 10, "orb_rate": 0.53, "min_orb": 2, "bank_cap": 250},
+    "super_hidden": {"fs": 15, "bank_open": 25, "orb_rate": 0.71, "min_orb": 4, "bank_cap": 400},
 }
 
 # Base-game (non-feature) top bar content rates, applied on every non-feature reveal.
 BASEGAME_BAR_RATES = {"empty": 0.73, "orb": 0.27}
+# Bank cap for a lone base-game spin (no tier is active yet) - Regular's cap,
+# the most conservative of the three.
+BASEGAME_BANK_CAP = 150
 
 ORB_START_VALUES = {2: 40, 4: 25, 8: 18, 16: 12, 32: 5}
 LADDER_CAP = 512
@@ -108,6 +112,7 @@ class GameConfig(Config):
         self.ladder_cap = LADDER_CAP
         self.orb_start_values = ORB_START_VALUES
         self.basegame_bar_rates = BASEGAME_BAR_RATES
+        self.basegame_bank_cap = BASEGAME_BANK_CAP
         self.bonus_tiers = BONUS_TIERS
         self.wild_mult_values = WILD_MULT_VALUES
 
@@ -278,8 +283,8 @@ class GameConfig(Config):
 
     def _max_royale_mode(self):
         """Guaranteed Super Hidden entry at max conditions: 20 spins, bank opens at 100x,
-        75% orb rate, minimum orb 8x."""
-        override = {"orb_rate": 0.75, "min_orb": 8, "bank_open": 100, "fs_override": 20}
+        75% orb rate, minimum orb 8x, bank capped at 500x."""
+        override = {"orb_rate": 0.75, "min_orb": 8, "bank_open": 100, "fs_override": 20, "bank_cap": 500}
         common = {
             "reel_weights": {
                 self.basegame_type: {"BR0": 1},

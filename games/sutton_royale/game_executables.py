@@ -115,10 +115,16 @@ class GameExecutables(GameCalculations):
         if changed:
             top_bar_ladder_event(self)
 
+    def get_bank_cap(self) -> float:
+        """Active tier's bank cap, or the base-game default when no tier is active yet."""
+        if self.bar_params is not None:
+            return self.bar_params["bank_cap"]
+        return self.config.basegame_bank_cap
+
     def settle_top_bar_bank(self) -> None:
-        """At spin end: bank the bar's current values, then multiply the spin's win by the bank."""
+        """At spin end: bank the bar's current values (capped per tier), then multiply the win."""
         bar_sum = sum(pos["value"] for pos in self.top_bar if pos["type"] == "orb" and pos["value"])
-        self.bank += bar_sum
+        self.bank = min(self.bank + bar_sum, self.get_bank_cap())
         bank_mult = max(1, self.bank)
         base_win = self.win_manager.spin_win
         if bank_mult != 1 and base_win > 0:
