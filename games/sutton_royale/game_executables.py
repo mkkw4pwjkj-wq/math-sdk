@@ -10,15 +10,22 @@ src.calculations.scatter did for the old scatter-pays win type.
 
 Top bar (ladder + bank), unaffected by the ways switch - two independent
 motions, drawn straight from SPEC.md:
-  * Ladder - within one spin, every multiplier orb currently on the bar
-    doubles its own value each time a cascade produces a win. Capped at 512x.
-    Resets (redrawn from scratch) at the start of every spin.
-  * Bank - at spin end, the (ladder-adjusted) bar values are added to a running
-    total that persists for the rest of the feature. Every spin's win is
+  * Ladder - within one spin, every multiplier orb (or wild-with-multiplier)
+    currently on the bar doubles its own value each time a cascade produces
+    a win. Capped at 512x. Resets (redrawn from scratch) at the start of
+    every spin.
+  * Bank - at spin end, the (ladder-adjusted) bar values are added to a
+    running total that persists for the rest of the feature, capped per
+    tier (Regular 150x / Super 250x / Super Hidden 400x / Max Royale 500x -
+    the bank previously had no ceiling, which is what pegged Max Royale at
+    the 20,000x wincap on every single smoke-test sim). Every spin's win is
     multiplied by max(1, bank).
 
-The top bar carries only "empty" and "multiplier orb" content - it has no
-wild of its own; the grid wild above is a separate, unrelated mechanic.
+Top bar content is empty / multiplier orb / wild-with-multiplier / plain
+wild. "wild_mult" is numerically identical to "orb" (same starting-value
+draw, same ladder/bank participation); "wild" (plain) carries no value - a
+bar slot with no mathematical effect. This bar wild is unrelated to the grid
+wild above - two separate mechanics that happen to share a name.
 """
 
 from game_calculations import GameCalculations
@@ -82,7 +89,7 @@ class GameExecutables(GameCalculations):
         bar = []
         for _ in range(6):
             content = get_random_outcome(weights)
-            if content == "orb":
+            if content in ("orb", "wild_mult"):
                 value = max(get_random_outcome(self.config.orb_start_values), min_orb)
                 bar.append({"type": content, "value": value})
             else:
@@ -93,23 +100,18 @@ class GameExecutables(GameCalculations):
 
     def draw_top_bar_basegame(self) -> None:
         """Base-game (non-feature) top bar draw - fixed rates regardless of bet mode."""
-        rates = self.config.basegame_bar_rates
-        weights = {"empty": rates["empty"], "orb": rates["orb"]}
-        self.draw_top_bar(weights, min_orb=2)
+        self.draw_top_bar(self.config.basegame_bar_rates, min_orb=2)
 
     def draw_top_bar_feature(self) -> None:
         """Free-spin top bar draw using the active tier's (possibly overridden) rates."""
         params = self.bar_params
-        orb_rate = params["orb_rate"]
-        empty_rate = max(0.0, 1.0 - orb_rate)
-        weights = {"empty": empty_rate, "orb": orb_rate}
-        self.draw_top_bar(weights, min_orb=params["min_orb"])
+        self.draw_top_bar(params["rates"], min_orb=params["min_orb"])
 
     def apply_top_bar_ladder(self) -> None:
-        """Double every multiplier orb value on the bar, capped at ladder_cap."""
+        """Double every orb / wild-with-multiplier value on the bar, capped at ladder_cap."""
         changed = False
         for pos in self.top_bar:
-            if pos["type"] == "orb" and pos["value"] is not None:
+            if pos["type"] in ("orb", "wild_mult") and pos["value"] is not None:
                 pos["value"] = min(pos["value"] * 2, self.config.ladder_cap)
                 changed = True
         if changed:
@@ -123,7 +125,7 @@ class GameExecutables(GameCalculations):
 
     def settle_top_bar_bank(self) -> None:
         """At spin end: bank the bar's current values (capped per tier), then multiply the win."""
-        bar_sum = sum(pos["value"] for pos in self.top_bar if pos["type"] == "orb" and pos["value"])
+        bar_sum = sum(pos["value"] for pos in self.top_bar if pos["type"] in ("orb", "wild_mult") and pos["value"])
         self.bank = min(self.bank + bar_sum, self.get_bank_cap())
         bank_mult = max(1, self.bank)
         base_win = self.win_manager.spin_win

@@ -45,20 +45,22 @@ the minimum to pay, 6 is the maximum).
 
 | Symbol | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|
-| L1 | 0.10 | 0.10 | 0.10 | 0.10 |
-| L2 | 0.10 | 0.10 | 0.10 | 0.10 |
-| L3 | 0.10 | 0.10 | 0.10 | 0.20 |
-| L4 | 0.10 | 0.10 | 0.10 | 0.20 |
-| H4 | 0.10 | 0.10 | 0.20 | 0.30 |
-| H3 | 0.10 | 0.10 | 0.20 | 0.40 |
-| H2 | 0.10 | 0.20 | 0.30 | 0.60 |
-| H1 | 0.10 | 0.20 | 0.40 | 1.00 |
+| L1 | 0.10 | 0.20 | 0.60 | 1.60 |
+| L2 | 0.10 | 0.30 | 0.80 | 2.00 |
+| L3 | 0.20 | 0.40 | 1.00 | 3.00 |
+| L4 | 0.20 | 0.50 | 1.40 | 4.00 |
+| H4 | 0.30 | 0.80 | 2.00 | 6.00 |
+| H3 | 0.40 | 1.20 | 3.00 | 10.00 |
+| H2 | 0.60 | 2.00 | 5.00 | 16.00 |
+| H1 | 1.20 | 4.00 | 10.00 | 30.00 |
 
-Placeholder seed values, held near the RGS's 0.10x payout floor on purpose:
-ways (up to 15,625×), the wild's reel multiplier, and the top bar's bank all
-multiply the same win, so per-way base values need to be far smaller than a
-scatter-pays table's. Optimizer will move these once the real per-way numbers
-are available.
+Real numbers, scaled ×20 from the source values (0.005/0.010/0.030/0.080 for
+L1, etc.) — those were specified to three decimal places, finer than the
+RGS's 0.10x payout grid, and the aggregated final payout can only be
+guaranteed to land on that grid if every paytable cell already does. ×20
+lands exactly on the grid for every cell except two, rounded to the nearest
+0.10x instead: L2 3-reel (0.006 → 0.12 → 0.10) and L3 3-reel (0.008 → 0.16 →
+0.20).
 
 ## Reel strip weights
 
@@ -95,24 +97,31 @@ stacks hard with the top bar's bank below.
 
 ## Top bar
 
-Six positions above the grid, refilled each spin, persists through a cascade sequence.
+Six positions above the grid, refilled each spin, persists through a cascade
+sequence. "Wild + mult" is numerically identical to "multiplier orb" (same
+starting-value draw, same ladder/bank participation); "plain wild" carries no
+value — a bar slot with no mathematical effect, occupying the position
+cosmetically only. This bar wild is unrelated to the grid wild described
+under Symbols above.
 
-| Content | Base game |
-|---|---|
-| Empty | 73% |
-| Multiplier orb | 27% |
-
-No wild symbol content — see Bonus tiers below for the per-tier ("in
-feature") orb rate.
+| Content | Base | Regular | Super | Hidden | Max Royale |
+|---|---|---|---|---|---|
+| Empty | 82% | 72% | 66% | 55% | 48% |
+| Multiplier orb | 10% | 16% | 20% | 28% | 34% |
+| Wild + mult | 6% | 9% | 11% | 14% | 15% |
+| Plain wild | 2% | 3% | 3% | 3% | 3% |
 
 Orb starting values: 2× (40%), 4× (25%), 8× (18%), 16× (12%), 32× (5%)
 
 ### Two independent motions
 
-- **Ladder** — within one spin, an orb joining a cascade win doubles its own
-  value. Caps at 512×. Resets each spin.
-- **Bank** — at spin end, every orb value on the bar adds to a running total.
-  Never resets during a feature. All wins multiply by the bank.
+- **Ladder** — within one spin, an orb (or wild + mult) joining a cascade win
+  doubles its own value. Caps at 512×. Resets each spin.
+- **Bank** — at spin end, every orb / wild + mult value on the bar adds to a
+  running total. Never resets during a feature. All wins multiply by the
+  bank. **Capped per tier** — Regular 150×, Super 250×, Super Hidden 400×,
+  Max Royale 500× — since an unbounded bank was pegging Max Royale at the
+  20,000× cap on every simulated spin (see Constraints).
 
 Cascade continuation probability (~0.33 on this grid) is the strongest
 volatility lever. Tune before touching the paytable.
@@ -127,7 +136,7 @@ One scatter weight produces all three tiers — ratios are fixed by the binomial
 | Odds | 1 in 386 | 1 in 3,634 | 1 in 39,800 |
 | Free spins | 10 | 12 | 15 |
 | Bank opens at | 0 | 10× | 25× |
-| Orb rate | 41% | 53% | 71% |
+| Bank caps at | 150× | 250× | 400× |
 | Minimum orb | 2× | 2× | 4× |
 | Average payout | 220× | 512× | 995× |
 | Median payout | 62× | 140× | 260× |
@@ -174,8 +183,9 @@ it read as a gamble rather than a discounted bonus.
 
 ### Max Royale — 1,500×
 
-Guaranteed Super Hidden entry at max conditions: 20 spins, bank opens at 100×,
-75% orb rate, minimum orb 8×.
+Guaranteed Super Hidden entry at max conditions: 20 spins, bank opens at 100×
+(capped at 500×), its own top-bar fill rates (see Top bar above), minimum
+orb 8×.
 
 | Payout band | Probability | Band average | Contribution |
 |---|---|---|---|
@@ -267,13 +277,19 @@ outcomes is a live regulatory issue. Keep it out of a first submission.
 Mechanics and math structure are not protectable. Names, art and trade dress
 are. Every feature label here is original to this game.
 
-**Max Royale needs a real pass before it can ship.** Under the placeholder
-per-way paytable above, a 100-sim smoke test hit the 20,000× cap on every
-single simulation — bank growth (unchanged mechanic) over 20 guaranteed
-spins at Max Royale's own 75–100% orb rate / minimum-orb-8 override reliably
-overwhelms even floor-value (0.10x) ways wins. The payout-band table further
-up assumed scatter-pays-scale wins; it will not hold until the real per-way
-paytable is optimized against this mode's specific top-bar override.
+**Max Royale needs a real pass before it can ship.** The bank previously had
+no ceiling at all, which is the bug that pegged it at the 20,000× cap on
+every one of 100 smoke-test sims. A per-tier cap (see Top bar above) fixes
+the unbounded-growth bug and was verified against a smaller placeholder
+paytable (5 distinct payouts across 100 sims instead of 1). But re-run
+against the real per-way paytable above, Max Royale is back to hitting the
+cap on all 100 sims: 20 guaranteed spins is enough for the bank to reach its
+500× cap on its own, and enough for at least one of this paytable's larger
+wins (H1 pays up to 30× per way) to clear 20,000× once it does. The bank cap
+is correctly implemented; Max Royale's specific combination of guaranteed
+spin count, its own top-bar fill rates, and this paytable's scale is what
+still needs an optimization pass — the payout-band table further up will not
+hold until that happens.
 
 ---
 

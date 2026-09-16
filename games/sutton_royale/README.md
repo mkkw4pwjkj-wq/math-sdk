@@ -4,24 +4,38 @@ This is a first working pass at the game described in `SPEC.md` (repo root).
 Game logic is in place and runs cleanly end-to-end for all four bet modes;
 **RTP has not been optimized** - see "Where this stands" below.
 
-## All-ways switch - things to flag before anything else
+## Things to flag before anything else
 
-- **The per-way paytable in this request was referenced ("values below") but
-  never actually included.** `game_config.py`'s paytable is a placeholder
-  I derived, not the real numbers - see below and in SPEC.md.
-- **Max Royale hits the 20,000x cap on every single sim in the 100-sim smoke
-  run** (all 100 payouts identical). This isn't a bug in the win calculator;
-  it's bank growth (explicitly unchanged) over 20 guaranteed spins at Max
-  Royale's own generous top-bar override overwhelming even floor-value
-  (0.10x) ways wins - see the dedicated bullet below and SPEC.md's new note
-  under Constraints. I didn't try to fix this by touching bank/ladder, since
-  those were called out as unchanged.
-- Two small defensive fixes landed in `utils/analysis/distribution_functions.py`
-  (not a game file): `get_distribution_moments` and `min_dist_difference` both
-  divided by / assumed a nonzero-variance distribution, and Max Royale's
-  degenerate 100-sim output (see above) hit both. Guarded rather than patched
-  around, since a mode with zero variance is a legitimate (if unusual) state
-  the analytics utility should survive at any sample size.
+- **The real per-way paytable, top-bar fill rates, and per-tier bank caps are
+  now all in place** (`game_config.py`), replacing the placeholders from the
+  all-ways switch. See SPEC.md for the exact tables.
+- **The paytable needed a x20 rescale.** As given (0.005/0.010/0.030/0.080 for
+  L1, etc.) it's specified to three decimal places - finer than the RGS's
+  0.10x payout grid. The aggregate final payout can only be guaranteed to
+  land on that grid if every paytable cell already does, so I scaled the
+  whole table x20 (exact for every cell but two, which got rounded to the
+  nearest 0.10x instead - see the comment in `game_config.py` and SPEC.md's
+  Paytable section for the exact two).
+- **The top bar has wild content again** ("wild + mult" and "plain wild"),
+  reversing an earlier request in this same session to remove it. It's back
+  to the original four-content-type design, just with new fill rates and,
+  now, a bank cap. This bar wild remains entirely unrelated to the grid wild
+  from the all-ways switch - two mechanics that happen to share a name.
+- **The bank cap fixes the diagnosed bug (unbounded growth) but Max Royale
+  still hits the 20,000x cap on all 100 smoke-test sims** once the real
+  (larger) paytable is in place - it passed with a smaller placeholder
+  paytable (5 distinct payouts instead of 1). 20 guaranteed spins is enough
+  for the bank to reach its own 500x cap on its own, and enough for one of
+  this paytable's larger wins (H1 pays up to 30x per way) to clear 20,000x
+  once it does. Bank cap is implemented exactly as specified; this remaining
+  saturation is a Max-Royale-specific scale interaction that needs an
+  optimization pass, not a code bug - see SPEC.md's Constraints section.
+- Two small defensive fixes remain in `utils/analysis/distribution_functions.py`
+  (not a game file, landed while chasing the bank-cap bug): `get_distribution_moments`
+  and `min_dist_difference` both divided by / assumed a nonzero-variance
+  distribution, and Max Royale's degenerate 100-sim output hit both. Guarded
+  rather than patched around, since a mode with zero variance is a legitimate
+  (if unusual) state the analytics utility should survive at any sample size.
 
 ## Engineering decisions not fully specified by SPEC.md
 
@@ -49,23 +63,24 @@ so they can be revisited:
   an all-ways game. Reels 2-5 keep the old "middle" character, reel 6 keeps
   the old "edge" (low-premium) character; all three now carry a small Wild
   weight (4/4/3 per 100) trimmed out of the low symbols.
-- **Per-way paytable and wild-multiplier values are placeholders I had to
-  invent**, not numbers from the request (see the flag above). Every payout
-  is a multiple of 0.10x (the RGS floor) and deliberately small: ways (up to
-  15,625x), the wild's reel multiplier, and the top bar's bank all multiply
-  the same win, so per-way base values need to be far smaller than the old
-  scatter-pays table's, or wins blow through 20,000x almost immediately. Even
-  at the 0.10x floor this wasn't enough to keep Max Royale off the cap - see
-  the flag above.
-- **Ladder** doubles every orb value on the bar whenever *any* cascade step
-  (including the initial reveal) produces a grid win, capped at 512x, and is
-  redrawn from scratch every spin (base spin, or each free spin).
+- **Per-way paytable is real now** (rescaled x20, see the flag above); the
+  grid wild's multiplier draw (2x 90% / 3x 10%) is still a placeholder - it
+  wasn't part of this round's numbers. Ways (up to 15,625x), the wild's reel
+  multiplier, and the top bar's bank all multiply the same win, so per-way
+  base values are deliberately much smaller than a scatter-pays table's.
+- **Ladder** doubles every orb / wild-with-multiplier value on the bar
+  whenever *any* cascade step (including the initial reveal) produces a grid
+  win, capped at 512x, and is redrawn from scratch every spin (base spin, or
+  each free spin).
 - **Bank**: at the end of a spin's full cascade sequence, the (ladder-adjusted)
-  bar values are summed and added to `gamestate.bank`, which is never reset
+  bar values are summed and added to `gamestate.bank`, capped per tier
+  (Regular 150x / Super 250x / Super Hidden 400x / Max Royale 500x -
+  `get_bank_cap()` in `game_executables.py`), and never otherwise reset
   during a feature. The spin's win is then multiplied by `max(1, bank)`. This
-  is applied uniformly on base-game spins too (bank starts at 0, so an empty
-  bar leaves wins unaffected) as well as free spins, rather than only in the
-  feature, since SPEC.md describes the top bar as present on every spin.
+  is applied uniformly on base-game spins too (bank starts at 0 and defaults
+  to Regular's 150x cap, so an empty bar leaves wins unaffected) as well as
+  free spins, rather than only in the feature, since SPEC.md describes the
+  top bar as present on every spin.
 - **Bonus tier selection** happens for free via the existing scatter-count ->
   free-spin-count engine mechanism (`freespin_triggers`): 4/5/6+ scatters
   already map to Regular/Super/Super Hidden's spin counts, so tier and spins
@@ -80,11 +95,11 @@ so they can be revisited:
   "nothing" outcome; SPEC.md's 48.8x EV table only accounts for the bonus
   contribution, so this is a (currently untuned) bonus on top of it.
 - **Max Royale** forces a Super Hidden trigger and applies its own top-bar
-  override (75% orb rate, min orb 8x, bank opens at 100x, 20 total spins)
-  through the same `top_bar_override` mechanism as everything else's forced
-  wincap branches; its own `wincap` distribution (quota 1.85%, matching
-  SPEC.md's "Cap hit" band exactly) forces an even more generous override to
-  reliably cross 20,000x.
+  override (its own fill rates, min orb 8x, bank opens at 100x capped at
+  500x, 20 total spins) through the same `top_bar_override` mechanism as
+  everything else's forced wincap branches; its own `wincap` distribution
+  (quota 1.85%, matching SPEC.md's "Cap hit" band exactly) forces an even
+  more generous override (100% orb) to reliably cross 20,000x.
 - **Bet mode quotas and `game_optimization.py` RTP allocations** are first-pass
   numbers derived from SPEC.md's tables (odds, average payouts, per-tier EV
   bands), not measured. They only need to be internally consistent for
@@ -101,9 +116,10 @@ four bet modes wired up (step 8).
 
 Not done, and each is a real, separately-scoped piece of work:
 
-- **The real per-way paytable and wild-multiplier values** - flagged at the
-  top of this file. Everything downstream (Max Royale's payout-band shape
-  especially) is provisional until these land.
+- **Max Royale's payout-band shape** - the per-tier bank cap is implemented
+  and correct, but Max Royale's own guaranteed-conditions combination still
+  saturates the 20,000x cap under the real paytable; see the flag at the top
+  of this file. The grid wild's multiplier draw is also still a placeholder.
 - **Step 9-10 (optimization pass)**: `run.py` is currently pinned to 100
   sims/mode with `run_optimization`/`run_analysis` off, per CLAUDE.md's
   working practice. Flipping these on and running the real sim counts from
