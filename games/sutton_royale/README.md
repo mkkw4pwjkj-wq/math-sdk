@@ -1,9 +1,8 @@
 # Sutton Royale - math-sdk implementation notes
 
-This is a first working pass at the game described in `SPEC.md` / `CLAUDE.md`
-(uploaded to the repo root context, not checked in here). Game logic is in
-place and runs cleanly end-to-end for all four bet modes; **RTP has not been
-optimized** - see "Where this stands" below.
+This is a first working pass at the game described in `SPEC.md` (repo root).
+Game logic is in place and runs cleanly end-to-end for all four bet modes;
+**RTP has not been optimized** - see "Where this stands" below.
 
 ## Engineering decisions not fully specified by SPEC.md
 
@@ -11,27 +10,20 @@ SPEC.md is a design document, not an engine spec, and a few mechanics needed
 a concrete interpretation to become precomputable game logic. Recorded here
 so they can be revisited:
 
-- **Top bar wilds never enter the grid** (a hard constraint), so a "wild with
-  multiplier" position is numerically identical to a plain multiplier orb -
-  same starting-value draw, same ladder/bank participation. A "plain wild"
-  bar position carries no numeric value; it occupies a bar slot (affects the
-  empty/orb/wild-mult/wild split) but has no mathematical effect. This keeps
-  wilds entirely a top-bar-visual concept, consistent with "specials never
-  enter the main grid."
-- **Ladder** doubles every orb/wild-mult value on the bar whenever *any*
-  cascade step (including the initial reveal) produces a grid win, capped at
-  512x, and is redrawn from scratch every spin (base spin, or each free
-  spin).
+- **No wild symbol exists anywhere in the game.** Scatter pays has nothing for
+  a wild to substitute into (there's no "match adjacent/connected" mechanic
+  a wild could join), so the top bar carries only two content types: empty
+  and multiplier orb. Rates: 27% orb / 73% empty at base, 41%/53%/71% orb
+  in the Regular/Super/Super Hidden feature tiers, 75% orb for Max Royale.
+- **Ladder** doubles every orb value on the bar whenever *any* cascade step
+  (including the initial reveal) produces a grid win, capped at 512x, and is
+  redrawn from scratch every spin (base spin, or each free spin).
 - **Bank**: at the end of a spin's full cascade sequence, the (ladder-adjusted)
   bar values are summed and added to `gamestate.bank`, which is never reset
   during a feature. The spin's win is then multiplied by `max(1, bank)`. This
   is applied uniformly on base-game spins too (bank starts at 0, so an empty
   bar leaves wins unaffected) as well as free spins, rather than only in the
   feature, since SPEC.md describes the top bar as present on every spin.
-- **Feature-tier top bar rates**: SPEC.md's "In feature" row (orb 28% / wild+mult
-  13% / wild 4% / empty 55%) is exactly the Regular tier's numbers, so plain
-  wild is treated as a flat 4% across all tiers, with `empty = 1 - orb_rate -
-  wild_mult_rate - 0.04` computed per tier (and per Max Royale's override).
 - **Bonus tier selection** happens for free via the existing scatter-count ->
   free-spin-count engine mechanism (`freespin_triggers`): 4/5/6+ scatters
   already map to Regular/Super/Super Hidden's spin counts, so tier and spins
@@ -46,7 +38,7 @@ so they can be revisited:
   "nothing" outcome; SPEC.md's 48.8x EV table only accounts for the bonus
   contribution, so this is a (currently untuned) bonus on top of it.
 - **Max Royale** forces a Super Hidden trigger and applies its own top-bar
-  override (55% orb rate, min orb 8x, bank opens at 100x, 20 total spins)
+  override (75% orb rate, min orb 8x, bank opens at 100x, 20 total spins)
   through the same `top_bar_override` mechanism as everything else's forced
   wincap branches; its own `wincap` distribution (quota 1.85%, matching
   SPEC.md's "Cap hit" band exactly) forces an even more generous override to

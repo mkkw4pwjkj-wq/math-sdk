@@ -1,18 +1,16 @@
 """Game specific executable functions - the top bar (ladder + bank) mechanic.
 
 Two independent motions, drawn straight from SPEC.md:
-  * Ladder - within one spin, every orb/wild-with-multiplier currently on the bar
+  * Ladder - within one spin, every multiplier orb currently on the bar
     doubles its own value each time a cascade produces a win. Capped at 512x.
     Resets (redrawn from scratch) at the start of every spin.
   * Bank - at spin end, the (ladder-adjusted) bar values are added to a running
     total that persists for the rest of the feature. Every spin's win is
     multiplied by max(1, bank).
 
-Wilds never sit on the main grid (SPEC.md / CLAUDE.md non-negotiable #5), so a
-top bar "wild" position carries no numeric value of its own - "wild with
-multiplier" is numerically identical to a plain multiplier orb and a "plain
-wild" is a bar slot with no value, cosmetic only. See README.md for the full
-rationale.
+There is no wild symbol anywhere in this game - scatter pays has nothing for
+a wild to substitute into, so the top bar carries only "empty" and
+"multiplier orb" content. See README.md for the full rationale.
 """
 
 from game_calculations import GameCalculations
@@ -69,7 +67,7 @@ class GameExecutables(GameCalculations):
         bar = []
         for _ in range(6):
             content = get_random_outcome(weights)
-            if content in ("orb", "wild_mult"):
+            if content == "orb":
                 value = max(get_random_outcome(self.config.orb_start_values), min_orb)
                 bar.append({"type": content, "value": value})
             else:
@@ -81,24 +79,22 @@ class GameExecutables(GameCalculations):
     def draw_top_bar_basegame(self) -> None:
         """Base-game (non-feature) top bar draw - fixed rates regardless of bet mode."""
         rates = self.config.basegame_bar_rates
-        weights = {"empty": rates["empty"], "orb": rates["orb"], "wild_mult": rates["wild_mult"], "wild": rates["wild"]}
+        weights = {"empty": rates["empty"], "orb": rates["orb"]}
         self.draw_top_bar(weights, min_orb=2)
 
     def draw_top_bar_feature(self) -> None:
         """Free-spin top bar draw using the active tier's (possibly overridden) rates."""
         params = self.bar_params
         orb_rate = params["orb_rate"]
-        wild_mult_rate = params["wild_mult_rate"]
-        wild_rate = self.config.feature_wild_rate
-        empty_rate = max(0.0, 1.0 - orb_rate - wild_mult_rate - wild_rate)
-        weights = {"empty": empty_rate, "orb": orb_rate, "wild_mult": wild_mult_rate, "wild": wild_rate}
+        empty_rate = max(0.0, 1.0 - orb_rate)
+        weights = {"empty": empty_rate, "orb": orb_rate}
         self.draw_top_bar(weights, min_orb=params["min_orb"])
 
     def apply_top_bar_ladder(self) -> None:
-        """Double every orb / wild-with-multiplier value on the bar, capped at ladder_cap."""
+        """Double every multiplier orb value on the bar, capped at ladder_cap."""
         changed = False
         for pos in self.top_bar:
-            if pos["type"] in ("orb", "wild_mult") and pos["value"] is not None:
+            if pos["type"] == "orb" and pos["value"] is not None:
                 pos["value"] = min(pos["value"] * 2, self.config.ladder_cap)
                 changed = True
         if changed:
@@ -106,7 +102,7 @@ class GameExecutables(GameCalculations):
 
     def settle_top_bar_bank(self) -> None:
         """At spin end: bank the bar's current values, then multiply the spin's win by the bank."""
-        bar_sum = sum(pos["value"] for pos in self.top_bar if pos["type"] in ("orb", "wild_mult") and pos["value"])
+        bar_sum = sum(pos["value"] for pos in self.top_bar if pos["type"] == "orb" and pos["value"])
         self.bank += bar_sum
         bank_mult = max(1, self.bank)
         base_win = self.win_manager.spin_win

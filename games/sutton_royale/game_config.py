@@ -1,12 +1,12 @@
 """Sutton Royale game configuration.
 
 Grid: 6x5 scatter-pays, cascading (tumble) until no win. A separate 6x1
-"top bar" sits above the grid holding multiplier orbs / wilds; see
-gamestate.py / game_executables.py for the ladder+bank mechanic. Specials
-(wilds, multiplier orbs) exist only in the top bar and never enter the
-main grid - see README.md in this directory for the full set of
-engineering decisions made to turn SPEC.md's design language into
-precomputable game logic.
+"top bar" sits above the grid holding multiplier orbs; see gamestate.py /
+game_executables.py for the ladder+bank mechanic. There is no wild symbol
+anywhere in the game - scatter pays has nothing for a wild to substitute
+into, so the top bar carries only empty / multiplier-orb content. See
+README.md in this directory for the full set of engineering decisions made
+to turn SPEC.md's design language into precomputable game logic.
 """
 
 import os
@@ -17,17 +17,16 @@ from src.config.betmode import BetMode
 # Free spins awarded per initial scatter trigger tier (basegame -> freegame entry).
 TIER_FS = {"regular": 10, "super": 12, "super_hidden": 15}
 
-# Top-bar behaviour per tier: orb_rate / wild_mult_rate are draw probabilities per
-# bar position while in the feature; wild (plain) stays flat at 4% (see README).
+# Top-bar behaviour per tier: orb_rate is the draw probability per bar position
+# while in the feature (remaining probability is "empty").
 BONUS_TIERS = {
-    "regular": {"fs": 10, "bank_open": 0, "orb_rate": 0.28, "wild_mult_rate": 0.13, "min_orb": 2},
-    "super": {"fs": 12, "bank_open": 10, "orb_rate": 0.35, "wild_mult_rate": 0.18, "min_orb": 2},
-    "super_hidden": {"fs": 15, "bank_open": 25, "orb_rate": 0.45, "wild_mult_rate": 0.26, "min_orb": 4},
+    "regular": {"fs": 10, "bank_open": 0, "orb_rate": 0.41, "min_orb": 2},
+    "super": {"fs": 12, "bank_open": 10, "orb_rate": 0.53, "min_orb": 2},
+    "super_hidden": {"fs": 15, "bank_open": 25, "orb_rate": 0.71, "min_orb": 4},
 }
 
 # Base-game (non-feature) top bar content rates, applied on every non-feature reveal.
-BASEGAME_BAR_RATES = {"empty": 0.70, "orb": 0.18, "wild_mult": 0.09, "wild": 0.03}
-FEATURE_WILD_RATE = 0.04  # plain-wild rate is flat across all feature tiers
+BASEGAME_BAR_RATES = {"empty": 0.73, "orb": 0.27}
 
 ORB_START_VALUES = {2: 40, 4: 25, 8: 18, 16: 12, 32: 5}
 LADDER_CAP = 512
@@ -77,8 +76,8 @@ class GameConfig(Config):
 
         self.include_padding = True
         # "wild" must exist as a key (even empty) - src.calculations.scatter.Scatter
-        # looks up config.special_symbols["wild"] unconditionally. Wilds never sit
-        # on the main grid in this game so the list stays empty.
+        # looks up config.special_symbols["wild"] unconditionally. There is no wild
+        # symbol anywhere in this game (main grid or top bar), so the list stays empty.
         self.special_symbols = {"wild": [], "scatter": ["S"]}
 
         self.freespin_triggers = {
@@ -94,7 +93,6 @@ class GameConfig(Config):
         self.ladder_cap = LADDER_CAP
         self.orb_start_values = ORB_START_VALUES
         self.basegame_bar_rates = BASEGAME_BAR_RATES
-        self.feature_wild_rate = FEATURE_WILD_RATE
         self.bonus_tiers = BONUS_TIERS
 
         reels = {"BR0": "BR0.csv", "FR0": "FR0.csv", "ENH0": "ENH0.csv"}
@@ -138,7 +136,7 @@ class GameConfig(Config):
             "forced_tier": "super_hidden",
             "force_wincap": True,
             "force_freegame": True,
-            "top_bar_override": {"orb_rate": 1.0, "wild_mult_rate": 0.0, "min_orb": 32, "bank_open": 200},
+            "top_bar_override": {"orb_rate": 1.0, "min_orb": 32, "bank_open": 200},
         }
         if extra_conditions:
             wincap_cond.update(extra_conditions)
@@ -258,8 +256,8 @@ class GameConfig(Config):
 
     def _max_royale_mode(self):
         """Guaranteed Super Hidden entry at max conditions: 20 spins, bank opens at 100x,
-        55% orb rate, minimum orb 8x."""
-        override = {"orb_rate": 0.55, "min_orb": 8, "bank_open": 100, "fs_override": 20}
+        75% orb rate, minimum orb 8x."""
+        override = {"orb_rate": 0.75, "min_orb": 8, "bank_open": 100, "fs_override": 20}
         common = {
             "reel_weights": {
                 self.basegame_type: {"BR0": 1},

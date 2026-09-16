@@ -17,7 +17,7 @@ def top_bar_reveal_event(gamestate) -> None:
 
 
 def top_bar_ladder_event(gamestate) -> None:
-    """Emit updated bar values after a cascade win doubles every active orb/wild-mult."""
+    """Emit updated bar values after a cascade win doubles every active orb."""
     event = {
         "index": len(gamestate.book.events),
         "type": TOP_BAR_LADDER,
