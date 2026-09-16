@@ -1,6 +1,7 @@
 """Gamestate for a single Sutton Royale betting round."""
 
 from game_override import GameStateOverride
+from src.events.events import reveal_event
 
 
 class GameState(GameStateOverride):
@@ -11,8 +12,9 @@ class GameState(GameStateOverride):
         self.repeat = True
         while self.repeat:
             self.reset_book()
-            self.draw_top_bar_basegame()
-            self.draw_board()
+            self.draw_board(emit_event=False)
+            self.apply_wild_drops_basegame()
+            reveal_event(self)
 
             self.get_ways_update_wins()
             self.emit_tumble_win_events()
@@ -37,8 +39,9 @@ class GameState(GameStateOverride):
         self.reset_fs_spin()
         while self.fs < self.tot_fs and not self.wincap_triggered:
             self.update_freespin()
-            self.draw_top_bar_feature()
-            self.draw_board()
+            self.draw_board(emit_event=False)
+            self.apply_wild_drops_feature()
+            reveal_event(self)
 
             self.get_ways_update_wins()
             self.emit_tumble_win_events()

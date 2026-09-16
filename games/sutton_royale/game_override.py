@@ -1,7 +1,17 @@
-"""Game-specific overrides/extensions of universal state.py functions."""
+"""Game-specific overrides/extensions of universal state.py functions - SPEC v2."""
+
+import math
 
 from game_executables import GameExecutables
-from src.calculations.statistics import get_random_outcome
+
+
+def quantize_payout(amount: float) -> float:
+    """Round to the nearest 0.10x; anything below 0.05x becomes 0 (SPEC v2 s9).
+    This is the same rule stated twice in the spec - round-half-up onto the
+    0.10x grid already sends [0, 0.05) to 0."""
+    if amount <= 0:
+        return 0.0
+    return math.floor(amount * 10 + 0.5) / 10
 
 
 class GameStateOverride(GameExecutables):
@@ -9,35 +19,60 @@ class GameStateOverride(GameExecutables):
 
     def reset_book(self):
         super().reset_book()
-        self.top_bar = []
-        self.bank = 0
+        self.locked_wilds = {}
         self.current_tier = None
         self.bar_params = None
 
     def reset_fs_spin(self):
         super().reset_fs_spin()
+        self.locked_wilds = {}
         # Called once during GeneralGameState.__init__, before betmode/criteria
         # are assigned by run_sims() - nothing to resolve yet in that case.
         if not getattr(self, "betmode", None):
             self.current_tier = None
             self.bar_params = None
-            self.bank = 0
             return
         tier = self.resolve_tier()
-        params = self.resolve_bar_params(tier)
         self.current_tier = tier
-        self.bar_params = params
-        self.bank = params["bank_open"]
+        self.bar_params = self.resolve_bar_params(tier)
 
     def assign_special_sym_function(self):
-        # Wild ("W") is the only special symbol living on the main grid - the
-        # top bar's orbs are custom state, not engine Symbol objects.
-        self.special_symbol_functions = {"W": [self.assign_mult_property]}
+        # "W" is never created via the reel-strip pipeline in v2 (no wild in
+        # any strip) - it's only ever created directly by
+        # game_executables.apply_wild_drops(), which sets its multiplier
+        # attribute itself. Nothing to hook here.
+        self.special_symbol_functions = {}
 
-    def assign_mult_property(self, symbol):
-        """Assign the grid wild's one-shot multiplier value for this spin."""
-        multiplier_value = get_random_outcome(self.get_current_distribution_conditions()["mult_values"])
-        symbol.assign_attribute({"multiplier": multiplier_value})
+    def update_final_win(self) -> None:
+        """Quantize the aggregated round payout to the nearest 0.10x (SPEC v2 s9),
+        rather than the engine's default nearest-cent rounding."""
+        basewin = quantize_payout(self.win_manager.basegame_wins)
+        freewin = quantize_payout(self.win_manager.freegame_wins)
+        total = round(basewin + freewin, 2)
+
+        if total > self.config.wincap:
+            final = self.config.wincap
+            # Clamp whichever component is larger to the cap and let the
+            # other absorb the (possibly zero) remainder, so
+            # basegame_wins + freegame_wins == payout_multiplier stays exact
+            # rather than inventing a proportional split.
+            if freewin >= basewin:
+                freewin = min(freewin, final)
+                basewin = max(0.0, round(final - freewin, 2))
+            else:
+                basewin = min(basewin, final)
+                freewin = max(0.0, round(final - basewin, 2))
+        else:
+            final = total
+
+        self.final_win = final
+        self.book.payout_multiplier = final
+        self.book.basegame_wins = basewin
+        self.book.freegame_wins = freewin
+
+        assert round(self.book.basegame_wins + self.book.freegame_wins, 2) == round(
+            self.book.payout_multiplier, 2
+        ), "Base + Free game payout mismatch!"
 
     def check_repeat(self) -> None:
         """Verify final win matches required betmode conditions."""

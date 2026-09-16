@@ -1,41 +1,41 @@
-"""Custom events for the Sutton Royale top bar (ladder + bank mechanic)."""
+"""Custom events for Sutton Royale's top-bar wild drop (SPEC v2's one multiplier system)."""
 
-TOP_BAR_REVEAL = "topBarReveal"
-TOP_BAR_LADDER = "topBarLadder"
-TOP_BAR_BANK = "topBarBank"
+WILD_DROP = "wildDrop"
+WILD_DOUBLE = "wildDouble"
+WILD_SETTLE = "wildSettle"
 
 
-def top_bar_reveal_event(gamestate) -> None:
-    """Emit the freshly-drawn top bar content for the current spin."""
+def wild_drop_event(gamestate, drops: list) -> None:
+    """Emit which reels got a wild dropped onto them this spin (including sticky carry-overs)."""
     event = {
         "index": len(gamestate.book.events),
-        "type": TOP_BAR_REVEAL,
+        "type": WILD_DROP,
         "gameType": gamestate.gametype,
-        "bar": [{"type": pos["type"], "value": pos["value"]} for pos in gamestate.top_bar],
+        "drops": drops,
     }
     gamestate.book.add_event(event)
 
 
-def top_bar_ladder_event(gamestate) -> None:
-    """Emit updated bar values after a cascade win doubles every active orb."""
+def wild_double_event(gamestate, doubled_positions: list) -> None:
+    """Emit which Royale Wilds just doubled after participating in a winning tumble."""
     event = {
         "index": len(gamestate.book.events),
-        "type": TOP_BAR_LADDER,
-        "bar": [{"type": pos["type"], "value": pos["value"]} for pos in gamestate.top_bar],
+        "type": WILD_DOUBLE,
+        "positions": [{"reel": r, "row": row} for (r, row) in doubled_positions],
     }
     gamestate.book.add_event(event)
 
 
-def top_bar_bank_event(gamestate, bar_sum: float, bank_total: float, base_win: float, final_win: float) -> None:
-    """Emit the bank update and resulting win multiplication at the end of a spin's cascades."""
+def wild_settle_event(gamestate, raw_total: float, capped_total: float, base_win: float, final_win: float) -> None:
+    """Emit the once-per-spin sum-and-apply of every Royale Wild on screen."""
     event = {
         "index": len(gamestate.book.events),
-        "type": TOP_BAR_BANK,
-        "barSum": bar_sum,
-        "bankTotal": bank_total,
+        "type": WILD_SETTLE,
+        "rawTotal": raw_total,
+        "cappedTotal": capped_total,
         "winInfo": {
             "tumbleWin": int(round(min(base_win, gamestate.config.wincap) * 100)),
-            "bankMult": max(1, bank_total),
+            "multiplier": capped_total,
             "totalWin": int(round(min(final_win, gamestate.config.wincap) * 100)),
         },
     }

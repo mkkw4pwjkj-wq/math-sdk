@@ -1,16 +1,24 @@
-"""Sutton Royale game configuration.
+"""Sutton Royale game configuration - SPEC v2.
 
 All-ways grid: 6x5, wins on consecutive-from-reel-1 matches, ways = product of
-matching symbols per reel (max 5**6 = 15,625 ways). Wild ("W") sits on the
-main grid, substitutes for any paying symbol, and carries a multiplier value
-that multiplies its reel's contribution to the ways count (src.calculations.ways
-`multiplier_strategy="symbol"` - see game_executables.py). Cascading (tumble)
-continues until no win. A separate 6x1 "top bar" sits above the grid holding
-multiplier orbs and its own (numerically inert) wild content - unrelated to
-the grid wild - see game_executables.py for the ladder+bank mechanic, now
-bank-capped per tier. See README.md in this directory for the full set of
-engineering decisions made to turn SPEC.md's design language into
-precomputable game logic.
+matching symbols per reel (max 5**6 = 15,625 ways). There is no grid wild -
+wilds enter only from the 6x1 top bar (one position per reel), where they drop
+directly onto their reel for that spin and substitute for any paying symbol.
+
+Exactly one multiplier system (v2 tears out v1's separate ladder+bank):
+  * A "Royale Wild" carries a multiplier value and doubles it in place any
+    time it participates in a winning tumble (capped at 512x per wild).
+  * A "plain wild" substitutes only, no value.
+  * At the end of a spin's whole cascade sequence, every Royale Wild value
+    currently on screen is summed and applied to that spin's win exactly
+    once (capped per game-state - base/regular/super/hidden/max_royale).
+  * In free spins, a landed wild locks to its reel for the rest of the
+    feature and keeps doubling across subsequent spins. In the base game,
+    wilds are gone the moment the spin ends (there is no next spin to carry
+    into within one simulated round anyway).
+
+See README.md for the engineering decisions made to turn SPEC.md's design
+language into precomputable game logic.
 """
 
 import os
@@ -21,42 +29,31 @@ from src.config.betmode import BetMode
 # Free spins awarded per initial scatter trigger tier (basegame -> freegame entry).
 TIER_FS = {"regular": 10, "super": 12, "super_hidden": 15}
 
-# Top-bar fill rates, per position, per tier. "wild_mult" is numerically
-# identical to "orb" (same starting-value draw, same ladder/bank
-# participation); "wild" (plain) carries no value - a bar slot with no
-# mathematical effect, occupying the position cosmetically only.
+# Top-bar fill rates, per reel position, per game-state. "royale" carries a
+# multiplier value (drawn from ROYALE_WILD_VALUES); "wild" (plain) does not.
 BONUS_TIERS = {
     "regular": {
-        "fs": 10, "bank_open": 0, "min_orb": 2, "bank_cap": 150,
-        "rates": {"empty": 0.72, "orb": 0.16, "wild_mult": 0.09, "wild": 0.03},
+        "fs": 10, "total_mult_cap": 200,
+        "rates": {"empty": 0.72, "royale": 0.20, "wild": 0.08},
     },
     "super": {
-        "fs": 12, "bank_open": 10, "min_orb": 2, "bank_cap": 250,
-        "rates": {"empty": 0.66, "orb": 0.20, "wild_mult": 0.11, "wild": 0.03},
+        "fs": 12, "total_mult_cap": 350,
+        "rates": {"empty": 0.66, "royale": 0.25, "wild": 0.09},
     },
     "super_hidden": {
-        "fs": 15, "bank_open": 25, "min_orb": 4, "bank_cap": 400,
-        "rates": {"empty": 0.55, "orb": 0.28, "wild_mult": 0.14, "wild": 0.03},
+        "fs": 15, "total_mult_cap": 500,
+        "rates": {"empty": 0.55, "royale": 0.35, "wild": 0.10},
     },
 }
 
-# Base-game (non-feature) top bar content rates, applied on every non-feature reveal.
-BASEGAME_BAR_RATES = {"empty": 0.82, "orb": 0.10, "wild_mult": 0.06, "wild": 0.02}
-# Bank cap for a lone base-game spin (no tier is active yet) - Regular's cap,
-# the most conservative of the three.
-BASEGAME_BANK_CAP = 150
+# Base-game (single spin, non-feature) top bar content rates.
+BASEGAME_BAR_RATES = {"empty": 0.82, "royale": 0.12, "wild": 0.06}
+BASEGAME_TOTAL_MULT_CAP = 100
 
-ORB_START_VALUES = {2: 40, 4: 25, 8: 18, 16: 12, 32: 5}
-LADDER_CAP = 512
+# Royale Wild's multiplier value on landing.
+ROYALE_WILD_VALUES = {2: 50, 3: 25, 5: 15, 10: 7, 25: 3}
+LADDER_CAP = 512  # per-wild cap on the in-place doubling
 MAX_TOTAL_FREESPINS = 40
-
-# Grid wild multiplier draw (a one-shot value per wild per spin, not the top
-# bar's ladder). Placeholder/seed - same rationale as the paytable below. Kept
-# modest because multiplier_strategy="symbol" compounds *multiplicatively*
-# across up to 6 reels (a wild's value replaces "+1" with "+value" in that
-# reel's ways count), on top of the ways count itself and the top bar's bank -
-# three multiplicative mechanics stacking, so small per-mechanic values matter.
-WILD_MULT_VALUES = {2: 90, 3: 10}
 
 
 class GameConfig(Config):
@@ -80,39 +77,42 @@ class GameConfig(Config):
         self.construct_paths()
 
         # Game Dimensions - 6x5 main grid. The 6x1 top bar is custom state
-        # (gamestate.top_bar), it is not part of the engine board.
+        # (gamestate.locked_wilds / the "W" symbols it drops onto self.board),
+        # it is not part of the engine's reel-strip-driven board.
         self.num_reels = 6
         self.num_rows = [5] * self.num_reels
 
-        # Per-way paytable by consecutive-reel count (min 3 reels to pay, as is
-        # standard for ways games). Real values, scaled x20 from the numbers as
-        # given (0.005/0.010/0.030/0.080 for L1, etc.): those are specified to
-        # three decimal places, finer than the RGS's 0.10x payout grid, and the
-        # final aggregated payout can only be guaranteed to land on that grid if
-        # every paytable cell already does. x20 lands exactly on the grid for
-        # every cell except two, which got rounded to the nearest 0.10x instead:
-        # L2 3-reel (0.006 x20 = 0.12 -> 0.10) and L3 3-reel (0.008 x20 = 0.16
-        # -> 0.20). Every other cell is untouched by the rounding.
+        # Per-way paytable by consecutive-reel count (min 3 reels to pay).
+        # Kept at full precision (down to 0.0015x) - see game_override.py's
+        # quantize_payout() / update_final_win() for how the RGS's 0.10x
+        # payout floor is satisfied on the aggregated round total instead of
+        # by coarsening this table.
         self.paytable = {
-            (3, "L1"): 0.10, (4, "L1"): 0.20, (5, "L1"): 0.60, (6, "L1"): 1.60,
-            (3, "L2"): 0.10, (4, "L2"): 0.30, (5, "L2"): 0.80, (6, "L2"): 2.00,
-            (3, "L3"): 0.20, (4, "L3"): 0.40, (5, "L3"): 1.00, (6, "L3"): 3.00,
-            (3, "L4"): 0.20, (4, "L4"): 0.50, (5, "L4"): 1.40, (6, "L4"): 4.00,
-            (3, "H4"): 0.30, (4, "H4"): 0.80, (5, "H4"): 2.00, (6, "H4"): 6.00,
-            (3, "H3"): 0.40, (4, "H3"): 1.20, (5, "H3"): 3.00, (6, "H3"): 10.00,
-            (3, "H2"): 0.60, (4, "H2"): 2.00, (5, "H2"): 5.00, (6, "H2"): 16.00,
-            (3, "H1"): 1.20, (4, "H1"): 4.00, (5, "H1"): 10.00, (6, "H1"): 30.00,
+            (3, "L1"): 0.0015, (4, "L1"): 0.0040, (5, "L1"): 0.0100, (6, "L1"): 0.025,
+            (3, "L2"): 0.0020, (4, "L2"): 0.0050, (5, "L2"): 0.0130, (6, "L2"): 0.032,
+            (3, "L3"): 0.0025, (4, "L3"): 0.0060, (5, "L3"): 0.0160, (6, "L3"): 0.045,
+            (3, "L4"): 0.0030, (4, "L4"): 0.0080, (5, "L4"): 0.0220, (6, "L4"): 0.060,
+            (3, "H4"): 0.0050, (4, "H4"): 0.0120, (5, "H4"): 0.0320, (6, "H4"): 0.090,
+            (3, "H3"): 0.0060, (4, "H3"): 0.0180, (5, "H3"): 0.0480, (6, "H3"): 0.150,
+            (3, "H2"): 0.0100, (4, "H2"): 0.0300, (5, "H2"): 0.0800, (6, "H2"): 0.250,
+            (3, "H1"): 0.0200, (4, "H1"): 0.0650, (5, "H1"): 0.1600, (6, "H1"): 0.450,
         }
 
         self.include_padding = True
-        # Wild ("W") now lives on the main grid: substitutes for any paying
-        # symbol and (via the "multiplier" attribute assigned below) multiplies
-        # its reel's contribution to the ways count.
+        # "wild" must exist as a key (even though it's empty here) - the
+        # engine's board machinery (src.calculations.ways.Ways / Board) looks
+        # up config.special_symbols["wild"] unconditionally. No reel strip
+        # contains "W" - it only ever gets created by gamestate.apply_wild_drops
+        # and injected directly onto self.board.
         self.special_symbols = {"wild": ["W"], "scatter": ["S"], "multiplier": []}
 
+        # Scatters accumulate across cascades within a spin (they never clear),
+        # so the on-screen count at trigger/retrigger time can exceed what a
+        # single reveal would show - cover the full grid (6x5=30) rather than
+        # a handful of likely counts.
         self.freespin_triggers = {
-            self.basegame_type: {4: TIER_FS["regular"], 5: TIER_FS["super"], **{n: TIER_FS["super_hidden"] for n in range(6, 11)}},
-            self.freegame_type: {n: 5 for n in range(3, 11)},
+            self.basegame_type: {4: TIER_FS["regular"], 5: TIER_FS["super"], **{n: TIER_FS["super_hidden"] for n in range(6, 31)}},
+            self.freegame_type: {n: 5 for n in range(3, 31)},
         }
         self.anticipation_triggers = {
             self.basegame_type: min(self.freespin_triggers[self.basegame_type].keys()) - 1,
@@ -121,11 +121,10 @@ class GameConfig(Config):
 
         self.max_total_freespins = MAX_TOTAL_FREESPINS
         self.ladder_cap = LADDER_CAP
-        self.orb_start_values = ORB_START_VALUES
+        self.royale_wild_values = ROYALE_WILD_VALUES
         self.basegame_bar_rates = BASEGAME_BAR_RATES
-        self.basegame_bank_cap = BASEGAME_BANK_CAP
+        self.basegame_total_mult_cap = BASEGAME_TOTAL_MULT_CAP
         self.bonus_tiers = BONUS_TIERS
-        self.wild_mult_values = WILD_MULT_VALUES
 
         reels = {"BR0": "BR0.csv", "FR0": "FR0.csv", "ENH0": "ENH0.csv"}
         self.reels = {}
@@ -140,7 +139,7 @@ class GameConfig(Config):
     # ------------------------------------------------------------------
     # Bet mode construction
     # ------------------------------------------------------------------
-    def _tier_distributions(self, base_reel_id, quotas, top_bar_override=None, extra_conditions=None):
+    def _tier_distributions(self, base_reel_id, quotas, extra_conditions=None):
         """Build the four standard tier-triggering distributions shared by base/enhancer modes."""
         dists = []
         tier_scatters = {"regular": 4, "super": 5, "super_hidden": 6}
@@ -154,7 +153,6 @@ class GameConfig(Config):
                 "forced_tier": tier,
                 "force_wincap": False,
                 "force_freegame": True,
-                "mult_values": self.wild_mult_values,
             }
             if extra_conditions:
                 cond.update(extra_conditions)
@@ -170,11 +168,9 @@ class GameConfig(Config):
             "force_wincap": True,
             "force_freegame": True,
             "top_bar_override": {
-                "rates": {"empty": 0.0, "orb": 1.0, "wild_mult": 0.0, "wild": 0.0},
-                "min_orb": 32,
-                "bank_open": 200,
+                "rates": {"empty": 0.0, "royale": 1.0, "wild": 0.0},
+                "royale_wild_values": {25: 1.0},
             },
-            "mult_values": self.wild_mult_values,
         }
         if extra_conditions:
             wincap_cond.update(extra_conditions)
@@ -191,7 +187,6 @@ class GameConfig(Config):
             "reel_weights": {self.basegame_type: {base_reel_id: 1}},
             "force_wincap": False,
             "force_freegame": False,
-            "mult_values": self.wild_mult_values,
         }
         if extra_conditions:
             zero_cond.update(extra_conditions)
@@ -201,7 +196,6 @@ class GameConfig(Config):
             "reel_weights": {self.basegame_type: {base_reel_id: 1}},
             "force_wincap": False,
             "force_freegame": False,
-            "mult_values": self.wild_mult_values,
         }
         if extra_conditions:
             basegame_cond.update(extra_conditions)
@@ -211,8 +205,8 @@ class GameConfig(Config):
 
     def _base_mode(self):
         quotas = {
-            "0": 0.5500,
-            "basegame": 0.4420,
+            "0": 0.7200,
+            "basegame": 0.2777,
             "fs_regular": 0.00260,
             "fs_super": 0.000275,
             "fs_super_hidden": 0.0000226,
@@ -232,8 +226,8 @@ class GameConfig(Config):
     def _enhancer_mode(self):
         # Scatter weight x3.65 (ENH0 reel) - regular bonus arrives ~1 in 106 while active.
         quotas = {
-            "0": 0.4900,
-            "basegame": 0.4900,
+            "0": 0.6800,
+            "basegame": 0.3000,
             "fs_regular": 0.00943,
             "fs_super": 0.00100,
             "fs_super_hidden": 0.0000822,
@@ -269,7 +263,6 @@ class GameConfig(Config):
                         "forced_tier": tier,
                         "force_wincap": False,
                         "force_freegame": True,
-                        "mult_values": self.wild_mult_values,
                     },
                 )
             )
@@ -281,7 +274,6 @@ class GameConfig(Config):
                     "reel_weights": {self.basegame_type: {"BR0": 1}},
                     "force_wincap": False,
                     "force_freegame": False,
-                    "mult_values": self.wild_mult_values,
                 },
             )
         )
@@ -297,14 +289,13 @@ class GameConfig(Config):
         )
 
     def _max_royale_mode(self):
-        """Guaranteed Super Hidden entry at max conditions: 20 spins, bank opens at 100x,
-        its own top-bar fill rates, minimum orb 8x, bank capped at 500x."""
+        """Guaranteed Super Hidden entry: 15 spins (Super Hidden's own default - no
+        override needed), 42% Royale Wild rate, minimum landed value 5x, total
+        multiplier capped at 750x."""
         override = {
-            "rates": {"empty": 0.48, "orb": 0.34, "wild_mult": 0.15, "wild": 0.03},
-            "min_orb": 8,
-            "bank_open": 100,
-            "fs_override": 20,
-            "bank_cap": 500,
+            "rates": {"empty": 0.48, "royale": 0.42, "wild": 0.10},
+            "royale_wild_values": {5: 55, 10: 30, 25: 15},
+            "total_mult_cap": 750,
         }
         common = {
             "reel_weights": {
@@ -314,11 +305,10 @@ class GameConfig(Config):
             "scatter_triggers": {6: 1},
             "forced_tier": "super_hidden",
             "force_freegame": True,
-            "mult_values": self.wild_mult_values,
         }
         wincap_override = dict(override)
         wincap_override.update(
-            {"rates": {"empty": 0.0, "orb": 1.0, "wild_mult": 0.0, "wild": 0.0}, "min_orb": 32}
+            {"rates": {"empty": 0.0, "royale": 1.0, "wild": 0.0}, "royale_wild_values": {25: 1.0}}
         )
         dists = [
             Distribution(
