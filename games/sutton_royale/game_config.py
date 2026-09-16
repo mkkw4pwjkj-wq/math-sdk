@@ -1,21 +1,31 @@
-"""Sutton Royale game configuration - SPEC v2.
+"""Sutton Royale game configuration - SPEC v3.
 
 All-ways grid: 6x5, wins on consecutive-from-reel-1 matches, ways = product of
 matching symbols per reel (max 5**6 = 15,625 ways). There is no grid wild -
 wilds enter only from the 6x1 top bar (one position per reel), where they drop
 directly onto their reel for that spin and substitute for any paying symbol.
 
-Exactly one multiplier system (v2 tears out v1's separate ladder+bank):
-  * A "Royale Wild" carries a multiplier value and doubles it in place any
-    time it participates in a winning tumble (capped at 512x per wild).
-  * A "plain wild" substitutes only, no value.
-  * At the end of a spin's whole cascade sequence, every Royale Wild value
-    currently on screen is summed and applied to that spin's win exactly
-    once (capped per game-state - base/regular/super/hidden/max_royale).
+v3 splits what v2 called "Royale Wild" into two separate specials (the actual
+Super Wild Cat pattern this game is modeled on: Panther plain, Tiger/FatCat
+grow, and the growing ones are rare) - collapsing them into one symbol that
+both grew AND landed often is what caused v2's saturation, not a missing cap:
+  * **Plain wild** - substitutes only, no value.
+  * **Static Wild** - substitutes, carries a fixed multiplier value, never
+    grows.
+  * **Ascending Wild** - substitutes, carries a multiplier value that doubles
+    in place every time it participates in a winning tumble. No cap on the
+    number of doublings, only a per-wild value ceiling (512x) - at a 3%
+    base landing rate that ceiling should almost never actually bind.
+  * At the end of a spin's whole cascade sequence, every Static + Ascending
+    Wild value currently on screen sums and applies to that spin's win
+    exactly once (capped per game-state - base/regular/super/hidden/
+    max_royale).
   * In free spins, a landed wild locks to its reel for the rest of the
-    feature and keeps doubling across subsequent spins. In the base game,
-    wilds are gone the moment the spin ends (there is no next spin to carry
-    into within one simulated round anyway).
+    feature, but its value resets to its original landed value at the start
+    of every subsequent spin (an Ascending Wild can still double within that
+    spin's own cascades - it just doesn't carry a compounded value forward
+    spin over spin, which is what let v2's version run away). In the base
+    game, wilds are gone the moment the spin ends.
 
 See README.md for the engineering decisions made to turn SPEC.md's design
 language into precomputable game logic.
@@ -29,30 +39,30 @@ from src.config.betmode import BetMode
 # Free spins awarded per initial scatter trigger tier (basegame -> freegame entry).
 TIER_FS = {"regular": 10, "super": 12, "super_hidden": 15}
 
-# Top-bar fill rates, per reel position, per game-state. "royale" carries a
-# multiplier value (drawn from ROYALE_WILD_VALUES); "wild" (plain) does not.
+# Top-bar fill rates, per reel position, per game-state.
 BONUS_TIERS = {
     "regular": {
-        "fs": 10, "total_mult_cap": 200,
-        "rates": {"empty": 0.72, "royale": 0.20, "wild": 0.08},
+        "fs": 10, "total_mult_cap": 100,
+        "rates": {"empty": 0.72, "plain": 0.08, "static": 0.14, "ascending": 0.06},
     },
     "super": {
-        "fs": 12, "total_mult_cap": 350,
-        "rates": {"empty": 0.66, "royale": 0.25, "wild": 0.09},
+        "fs": 12, "total_mult_cap": 150,
+        "rates": {"empty": 0.66, "plain": 0.09, "static": 0.16, "ascending": 0.09},
     },
     "super_hidden": {
-        "fs": 15, "total_mult_cap": 500,
-        "rates": {"empty": 0.55, "royale": 0.35, "wild": 0.10},
+        "fs": 15, "total_mult_cap": 250,
+        "rates": {"empty": 0.55, "plain": 0.10, "static": 0.19, "ascending": 0.16},
     },
 }
 
 # Base-game (single spin, non-feature) top bar content rates.
-BASEGAME_BAR_RATES = {"empty": 0.82, "royale": 0.12, "wild": 0.06}
-BASEGAME_TOTAL_MULT_CAP = 100
+BASEGAME_BAR_RATES = {"empty": 0.82, "plain": 0.06, "static": 0.09, "ascending": 0.03}
+BASEGAME_TOTAL_MULT_CAP = 50
 
-# Royale Wild's multiplier value on landing.
-ROYALE_WILD_VALUES = {2: 50, 3: 25, 5: 15, 10: 7, 25: 3}
-LADDER_CAP = 512  # per-wild cap on the in-place doubling
+# Multiplier value on landing, per wild type.
+STATIC_WILD_VALUES = {2: 38, 3: 26, 5: 19, 10: 11, 25: 5, 50: 1}
+ASCENDING_WILD_VALUES = {2: 60, 3: 30, 5: 10}
+LADDER_CAP = 512  # per-wild value ceiling (only the Ascending Wild ever grows toward it)
 MAX_TOTAL_FREESPINS = 40
 
 
@@ -83,11 +93,12 @@ class GameConfig(Config):
         self.num_rows = [5] * self.num_reels
 
         # Per-way paytable by consecutive-reel count (min 3 reels to pay).
-        # Kept at full precision (down to 0.0015x) - see game_override.py's
-        # quantize_payout() / update_final_win() for how the RGS's 0.10x
-        # payout floor is satisfied on the aggregated round total instead of
-        # by coarsening this table.
-        self.paytable = {
+        # v3 divides every SPEC v2 cell by 3 (computed here, not hand-transcribed,
+        # to rule out arithmetic slips). Kept at full precision - see
+        # game_override.py's quantize_payout() / update_final_win() for how the
+        # RGS's 0.10x payout floor is satisfied on the aggregated round total
+        # instead of by coarsening this table.
+        paytable_v2 = {
             (3, "L1"): 0.0015, (4, "L1"): 0.0040, (5, "L1"): 0.0100, (6, "L1"): 0.025,
             (3, "L2"): 0.0020, (4, "L2"): 0.0050, (5, "L2"): 0.0130, (6, "L2"): 0.032,
             (3, "L3"): 0.0025, (4, "L3"): 0.0060, (5, "L3"): 0.0160, (6, "L3"): 0.045,
@@ -97,6 +108,7 @@ class GameConfig(Config):
             (3, "H2"): 0.0100, (4, "H2"): 0.0300, (5, "H2"): 0.0800, (6, "H2"): 0.250,
             (3, "H1"): 0.0200, (4, "H1"): 0.0650, (5, "H1"): 0.1600, (6, "H1"): 0.450,
         }
+        self.paytable = {k: v / 3 for k, v in paytable_v2.items()}
 
         self.include_padding = True
         # "wild" must exist as a key (even though it's empty here) - the
@@ -121,7 +133,8 @@ class GameConfig(Config):
 
         self.max_total_freespins = MAX_TOTAL_FREESPINS
         self.ladder_cap = LADDER_CAP
-        self.royale_wild_values = ROYALE_WILD_VALUES
+        self.static_wild_values = STATIC_WILD_VALUES
+        self.ascending_wild_values = ASCENDING_WILD_VALUES
         self.basegame_bar_rates = BASEGAME_BAR_RATES
         self.basegame_total_mult_cap = BASEGAME_TOTAL_MULT_CAP
         self.bonus_tiers = BONUS_TIERS
@@ -168,8 +181,8 @@ class GameConfig(Config):
             "force_wincap": True,
             "force_freegame": True,
             "top_bar_override": {
-                "rates": {"empty": 0.0, "royale": 1.0, "wild": 0.0},
-                "royale_wild_values": {25: 1.0},
+                "rates": {"empty": 0.0, "plain": 0.0, "static": 0.0, "ascending": 1.0},
+                "ascending_wild_values": {5: 1.0},
             },
         }
         if extra_conditions:
@@ -290,12 +303,12 @@ class GameConfig(Config):
 
     def _max_royale_mode(self):
         """Guaranteed Super Hidden entry: 15 spins (Super Hidden's own default - no
-        override needed), 42% Royale Wild rate, minimum landed value 5x, total
-        multiplier capped at 750x."""
+        override needed), its own top-bar fill rates, total multiplier capped
+        at 350x. Static/Ascending Wild value tables are unchanged from the
+        other tiers - only the fill rates differ for Max Royale."""
         override = {
-            "rates": {"empty": 0.48, "royale": 0.42, "wild": 0.10},
-            "royale_wild_values": {5: 55, 10: 30, 25: 15},
-            "total_mult_cap": 750,
+            "rates": {"empty": 0.48, "plain": 0.10, "static": 0.21, "ascending": 0.21},
+            "total_mult_cap": 350,
         }
         common = {
             "reel_weights": {
@@ -308,7 +321,10 @@ class GameConfig(Config):
         }
         wincap_override = dict(override)
         wincap_override.update(
-            {"rates": {"empty": 0.0, "royale": 1.0, "wild": 0.0}, "royale_wild_values": {25: 1.0}}
+            {
+                "rates": {"empty": 0.0, "plain": 0.0, "static": 0.0, "ascending": 1.0},
+                "ascending_wild_values": {5: 1.0},
+            }
         )
         dists = [
             Distribution(

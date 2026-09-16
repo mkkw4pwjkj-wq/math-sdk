@@ -1,4 +1,5 @@
-"""Custom events for Sutton Royale's top-bar wild drop (SPEC v2's one multiplier system)."""
+"""Custom events for Sutton Royale's top-bar wild drop (SPEC v3's one multiplier system,
+split across Static and Ascending Wilds)."""
 
 WILD_DROP = "wildDrop"
 WILD_DOUBLE = "wildDouble"
@@ -6,7 +7,9 @@ WILD_SETTLE = "wildSettle"
 
 
 def wild_drop_event(gamestate, drops: list) -> None:
-    """Emit which reels got a wild dropped onto them this spin (including sticky carry-overs)."""
+    """Emit each reel's content this spin: {"reel", "kind" (empty/plain/static/
+    ascending), "value"} - including sticky carry-overs, reset to their
+    landed_value (see apply_wild_drops)."""
     event = {
         "index": len(gamestate.book.events),
         "type": WILD_DROP,
@@ -17,7 +20,7 @@ def wild_drop_event(gamestate, drops: list) -> None:
 
 
 def wild_double_event(gamestate, doubled_positions: list) -> None:
-    """Emit which Royale Wilds just doubled after participating in a winning tumble."""
+    """Emit which Ascending Wilds just doubled after participating in a winning tumble."""
     event = {
         "index": len(gamestate.book.events),
         "type": WILD_DOUBLE,
@@ -27,7 +30,7 @@ def wild_double_event(gamestate, doubled_positions: list) -> None:
 
 
 def wild_settle_event(gamestate, raw_total: float, capped_total: float, base_win: float, final_win: float) -> None:
-    """Emit the once-per-spin sum-and-apply of every Royale Wild on screen."""
+    """Emit the once-per-spin sum-and-apply of every Static + Ascending Wild on screen."""
     event = {
         "index": len(gamestate.book.events),
         "type": WILD_SETTLE,

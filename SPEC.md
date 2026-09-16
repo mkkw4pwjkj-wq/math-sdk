@@ -1,7 +1,7 @@
-# Sutton Royale — Math Specification v2
+# Sutton Royale — Math Specification v3
 
-**This document replaces SPEC.md v1 entirely.** Where the two disagree, v2 wins.
-See §15 for the delta.
+Amends v2 in place: §3/§4/§6/§7 updated below, everything else unchanged.
+See §16 for the v2→v3 delta (§15 covers v1→v2).
 
 Target platform: Stake Engine (math-sdk + frontend-sdk)
 
@@ -35,7 +35,8 @@ from above. Repeat until a drop produces no win.
 
 ## 3. Symbols
 
-Ten total: 8 paying, 1 scatter, 1 wild.
+Eleven total: 8 paying, 1 scatter, 2 wild (Static, Ascending) plus a plain
+wild with no value - see §6.
 
 **Wilds do not appear in the reel strips.** They enter only from the top bar.
 There is no grid wild. Do not add one.
@@ -44,16 +45,20 @@ There is no grid wild. Do not add one.
 
 Per way, as a multiple of total bet, by number of consecutive reels hit.
 
+Every v2 cell divided by 3 (v3 - the split wild below is the intended fix for
+the saturation v2 had, not a smaller paytable, but both landed in the same
+revision):
+
 ```
-symbol   3reel    4reel    5reel    6reel
-L1       0.0015   0.0040   0.0100   0.025
-L2       0.0020   0.0050   0.0130   0.032
-L3       0.0025   0.0060   0.0160   0.045
-L4       0.0030   0.0080   0.0220   0.060
-H4       0.0050   0.0120   0.0320   0.090
-H3       0.0060   0.0180   0.0480   0.150
-H2       0.0100   0.0300   0.0800   0.250
-H1       0.0200   0.0650   0.1600   0.450
+symbol   3reel      4reel      5reel      6reel
+L1       0.0005     0.001333   0.003333   0.008333
+L2       0.000667   0.001667   0.004333   0.010667
+L3       0.000833   0.002      0.005333   0.015
+L4       0.001      0.002667   0.007333   0.02
+H4       0.001667   0.004      0.010667   0.03
+H3       0.002      0.006      0.016      0.05
+H2       0.003333   0.01       0.026667   0.083333
+H1       0.006667   0.021667   0.053333   0.15
 ```
 
 Values are deliberately fine-grained. See §9 for how the 0.10× RGS floor is
@@ -82,53 +87,75 @@ starving it kills high-symbol wins entirely.
 
 ## 6. Top bar
 
-Six positions, one above each reel, refilled every spin. Two possible specials.
+Six positions, one above each reel, refilled every spin. Three possible
+specials - modeled on how Super Wild Cat actually splits its wilds (Panther
+plain, Tiger/FatCat grow, and the growing ones are rare). v2 collapsed the
+growing ones into a single symbol that both grew *and* landed often, then
+tried to cap its way out of the resulting saturation. Wrong fix - the split
+is the fix.
 
-- **Royale Wild** — drops onto its reel, substitutes for any paying symbol,
-  carries a multiplier value
 - **Plain wild** — drops onto its reel, substitutes only, no multiplier
+- **Static Wild** — drops onto its reel, substitutes, carries a fixed
+  multiplier value that never changes
+- **Ascending Wild** — drops onto its reel, substitutes, carries a multiplier
+  value that doubles every winning tumble it participates in - no cap on the
+  number of doublings, only the per-wild ceiling in §7.2
 
 ```
-              base  regular  super  hidden  maxroyale
-empty          82%    72%     66%     55%      48%
-Royale Wild    12%    20%     25%     35%      42%
-plain wild      6%     8%      9%     10%      10%
+                    base  regular  super  hidden  maxroyale
+empty                82%    72%     66%     55%      48%
+plain wild            6%     8%      9%     10%      10%
+Static Wild           9%    14%     16%     19%      21%
+Ascending Wild        3%     6%      9%     16%      21%
 ```
 
-Royale Wild multiplier values on landing:
+Static Wild multiplier value on landing:
 
 ```
-value    2x    3x    5x    10x   25x
-weight  50%   25%   15%    7%    3%
+value    2x    3x    5x    10x   25x   50x
+weight  38%   26%   19%    11%    5%    1%
 ```
 
-Mean landed value 3.95×.
+Ascending Wild multiplier value on landing (before any doubling):
 
-In Max Royale mode only, the minimum landed value is 5× — reweight to
-`5x 55% / 10x 30% / 25x 15%`.
+```
+value    2x    3x    5x
+weight  60%   30%   10%
+```
+
+At a 3% base landing rate, Ascending Wild should reach its per-wild ceiling
+(§7.2) almost never.
 
 ## 7. Multiplier rules
 
-There is exactly **one** multiplier system. No bank, no ladder, no separate
-running total. If you find yourself implementing two, stop.
+There is exactly **one** multiplier system, now split across two wild types
+instead of stacked systems. No bank, no separate running total.
 
-1. A Royale Wild that participates in a winning tumble **doubles its own
-   value**. This happens on the symbol, visibly.
-2. Per-wild cap: **512×**.
-3. All Royale Wild values on screen **sum**. The total applies **once**, at the
-   end of the whole tumble sequence — not per tumble.
+1. An Ascending Wild that participates in a winning tumble **doubles its own
+   value**. This happens on the symbol, visibly. No cap on the number of
+   doublings.
+2. Per-wild ceiling: **512×**. This is a value ceiling, not a doubling-count
+   cap - don't implement a separate "doubles at most N times" limit on top of
+   it.
+3. All Static + Ascending Wild values on screen **sum**. The total applies
+   **once**, at the end of the whole tumble sequence — not per tumble.
 4. Total summed multiplier is capped per mode:
 
 ```
-base         100x
-regular      200x
-super        350x
-hidden       500x
-maxroyale    750x
+base          50x
+regular      100x
+super        150x
+hidden       250x
+maxroyale    350x
 ```
 
-5. **In features, wilds are sticky.** They lock to their reel for the remainder
-   of the feature and keep doubling across spins.
+5. **In features, wilds are sticky**: a landed wild holds its reel position
+   for the remainder of the feature, but its value **resets to whatever it
+   landed with at the start of every subsequent spin**. An Ascending Wild can
+   still double within that spin's own cascades - it does not carry a
+   compounded value forward from one spin to the next. (v2 had it keep
+   doubling across spins with no reset; combined with landing often, that's
+   what produced the saturation - see §15.)
 6. **In base game, wilds clear at spin end.** Nothing persists between base
    spins.
 
@@ -295,3 +322,24 @@ with the bank off produced bit-identical results.
 
 Unchanged: RTP 97.70%, 20,000× cap, the three scatter tiers and their odds, all
 bet mode prices and their reconciliations, the volatility profile.
+
+## 16. What changed from v2
+
+v2's total multiplier cap did bind, and it wasn't an unbounded-multiplier bug
+this time - Max Royale still saturated the cap on every sim because a single
+"Royale Wild" both grew (doubling every winning tumble) and landed often
+(42% at Max Royale, 3% base was the low end), and kept its compounded value
+across every spin of a feature. Splitting it into two symbols is the actual
+fix, not a smaller cap:
+
+| | v2 | v3 |
+|---|---|---|
+| Wild types | Plain, Royale (grows + lands often) | Plain, Static (fixed, no growth), Ascending (grows, rare) |
+| Ascending Wild base landing rate | 12% (as "Royale") | 3% |
+| Doubling cap | 512×/wild | unchanged - 512×/wild, no separate doubling-count limit |
+| Sticky value across spins | carried forward compounded | **resets to landed value every spin** |
+| Total mult cap (base/regular/super/hidden/maxroyale) | 100/200/350/500/750 | 50/100/150/250/350 |
+| Paytable | as given in v2 §4 | every cell ÷3 |
+
+Unchanged: RTP 97.70%, 20,000× cap, the three scatter tiers and their odds,
+all bet mode prices, reel strips (§5), that wilds never appear in reel strips.

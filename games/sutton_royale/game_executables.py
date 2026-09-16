@@ -1,21 +1,31 @@
-"""Game specific executable functions - SPEC v2.
+"""Game specific executable functions - SPEC v3.
 
 Main grid: all-ways wins via the SDK's src.calculations.ways calculator, with
 `multiplier_strategy="global"` and `global_multiplier=1` so a wild substitutes
-as an ordinary 1-count match and never inflates the ways count itself (that
-was v1's grid-wild reel-multiplier, explicitly removed in v2). Ways doesn't
-tag winning positions for the tumble engine, so mark_exploding_ways_wins()
-does that - and specifically skips wild positions, since wilds don't clear
-mid-spin (see below).
+as an ordinary 1-count match and never inflates the ways count itself.
+Ways doesn't tag winning positions for the tumble engine, so
+mark_exploding_ways_wins() does that - and specifically skips wild positions,
+since wilds don't clear mid-spin (see below).
 
-The one multiplier system (SPEC v2 s7): a Royale Wild that participates in a
-winning tumble doubles its own value in place, capped at 512x
-(apply_wild_doubling). At the end of a spin's whole cascade sequence, every
-Royale Wild value currently on screen is summed and applied to that spin's
-win exactly once, capped per game-state (settle_wild_multiplier). In
-features, a landed wild locks to its reel (gamestate.locked_wilds) and
-carries its current value into every subsequent spin of that feature; in the
-base game nothing persists past the one spin.
+The one multiplier system (SPEC v3 s7), now split across two wild types
+(a plain wild has neither a value nor any of the below):
+  * Static Wild - fixed multiplier value, drawn once on landing, never changes.
+  * Ascending Wild - doubles its own value in place every time it participates
+    in a winning tumble (apply_wild_doubling), no cap on the *number* of
+    doublings, only a per-wild value ceiling (512x, config.ladder_cap).
+  * At the end of a spin's whole cascade sequence, every Static + Ascending
+    Wild value currently on screen sums and applies to that spin's win
+    exactly once, capped per game-state (settle_wild_multiplier).
+  * In features, a landed wild locks to its reel (gamestate.locked_wilds) for
+    the rest of the feature, but its value resets to whatever it landed with
+    at the start of every subsequent spin - an Ascending Wild can still
+    double within that spin's own cascades, it just doesn't carry a
+    compounded value forward from one spin to the next.
+
+A Symbol's `.locked` slot (otherwise unused anywhere in the engine - grepped
+to confirm) is repurposed here as a plain boolean flag meaning "this wild is
+an Ascending Wild" (as opposed to Static), since Symbol.__slots__ doesn't
+allow attaching a new attribute for it.
 """
 
 from game_calculations import GameCalculations
@@ -36,7 +46,7 @@ class GameExecutables(GameCalculations):
     # All-ways win evaluation (main grid)
     # ------------------------------------------------------------------
     def get_ways_update_wins(self):
-        """Evaluate all-ways wins, double any participating Royale Wilds, mark tumbles."""
+        """Evaluate all-ways wins, double any participating Ascending Wilds, mark tumbles."""
         self.win_data = Ways.get_ways_data(self.config, self.board, multiplier_strategy="global", global_multiplier=1)
         self.win_manager.tumble_win = self.win_data["totalWin"]
         self.win_manager.update_spinwin(self.win_data["totalWin"])
@@ -55,7 +65,11 @@ class GameExecutables(GameCalculations):
                     sym.explode = True
 
     def apply_wild_doubling(self) -> None:
-        """Double every Royale Wild that participated in this tumble's win(s), once each."""
+        """Double every Ascending Wild that participated in this tumble's win(s), once each.
+        Static Wilds (sym.locked is False) never double. This only ever changes the
+        in-spin board value - gamestate.locked_wilds' stored landed_value is left
+        untouched, so a sticky Ascending Wild resets to it next spin instead of
+        carrying a compounded value forward (SPEC v3 s7)."""
         doubled = set()
         for win in self.win_data["wins"]:
             for pos in win["positions"]:
@@ -63,11 +77,17 @@ class GameExecutables(GameCalculations):
                 if key in doubled:
                     continue
                 sym = self.board[pos["reel"]][pos["row"]]
-                if sym.check_attribute("wild") and sym.check_attribute("multiplier"):
+                if (
+                    sym.check_attribute("wild")
+                    and sym.locked
+                    and sym.check_attribute("multiplier")
+                    and sym.multiplier < self.config.ladder_cap
+                ):
+                    # Only counts (and only fires an event) while there's still
+                    # room to grow - once a wild is already at the 512x ceiling,
+                    # further wins it participates in are not further "doublings".
                     new_value = min(sym.multiplier * 2, self.config.ladder_cap)
                     sym.assign_attribute({"multiplier": new_value})
-                    if pos["reel"] in self.locked_wilds:
-                        self.locked_wilds[pos["reel"]]["value"] = new_value
                     doubled.add(key)
         if doubled:
             wild_double_event(self, sorted(doubled))
@@ -90,43 +110,48 @@ class GameExecutables(GameCalculations):
 
     def resolve_bar_params(self, tier: str) -> dict:
         """Merge tier defaults with any betmode-forced top_bar_override."""
-        params = {"royale_wild_values": self.config.royale_wild_values}
+        params = {
+            "static_wild_values": self.config.static_wild_values,
+            "ascending_wild_values": self.config.ascending_wild_values,
+        }
         params.update(self.config.bonus_tiers[tier])
         override = self.get_current_distribution_conditions().get("top_bar_override", {})
         params.update(override)
         return params
 
-    def apply_wild_drops(self, rates: dict, value_weights: dict, sticky: bool) -> None:
+    def apply_wild_drops(self, rates: dict, static_values: dict, ascending_values: dict, sticky: bool) -> None:
         """Drop wilds onto the grid for this spin: one independent roll per reel,
-        skipping any reel already locked (sticky feature wilds carry their value
-        forward unchanged until they next double)."""
+        skipping any reel already locked (a sticky feature wild keeps its reel
+        for the rest of the feature, but resets to its landed_value every spin -
+        SPEC v3 s7 - rather than carrying a doubled value forward)."""
         drops = []
         for reel in range(self.config.num_reels):
             if sticky and reel in self.locked_wilds:
                 locked = self.locked_wilds[reel]
-                self._place_wild(reel, locked["value"])
-                drops.append({"reel": reel, "value": locked["value"], "royale": locked["value"] is not None})
+                self._place_wild(reel, locked["kind"], locked["landed_value"])
+                drops.append({"reel": reel, "kind": locked["kind"], "value": locked["landed_value"]})
                 continue
 
-            content = get_random_outcome(rates)
-            if content == "royale":
-                value = get_random_outcome(value_weights)
-                self._place_wild(reel, value)
-                drops.append({"reel": reel, "value": value, "royale": True})
+            kind = get_random_outcome(rates)
+            if kind == "static":
+                value = get_random_outcome(static_values)
+            elif kind == "ascending":
+                value = get_random_outcome(ascending_values)
+            else:
+                value = None
+            if kind != "empty":
+                self._place_wild(reel, kind, value)
                 if sticky:
-                    self.locked_wilds[reel] = {"value": value}
-            elif content == "wild":
-                self._place_wild(reel, None)
-                drops.append({"reel": reel, "value": None, "royale": False})
-                if sticky:
-                    self.locked_wilds[reel] = {"value": None}
+                    self.locked_wilds[reel] = {"kind": kind, "landed_value": value}
+            drops.append({"reel": reel, "kind": kind, "value": value})
         wild_drop_event(self, drops)
 
-    def _place_wild(self, reel: int, value) -> None:
+    def _place_wild(self, reel: int, kind: str, value) -> None:
         """Create a wild Symbol and drop it onto the given reel - row doesn't
-        matter for ways evaluation (SPEC v2 s2), only reel does, but scatters
+        matter for ways evaluation (SPEC s2), only reel does, but scatters
         never tumble/clear so avoid overwriting one if the reel-strip draw
-        happened to land one this spin."""
+        happened to land one this spin. `.locked` is repurposed as the
+        is-Ascending flag (see module docstring)."""
         row = 0
         for candidate in range(self.config.num_rows[reel]):
             if not self.board[reel][candidate].check_attribute("scatter"):
@@ -135,16 +160,24 @@ class GameExecutables(GameCalculations):
         sym = self.symbol_storage.create_symbol("W")
         if value is not None:
             sym.assign_attribute({"multiplier": value})
+        sym.locked = kind == "ascending"
         self.board[reel][row] = sym
 
     def apply_wild_drops_basegame(self) -> None:
         """Base-game (single spin, non-feature) wild drop - fixed rates, never sticky."""
-        self.apply_wild_drops(self.config.basegame_bar_rates, self.config.royale_wild_values, sticky=False)
+        self.apply_wild_drops(
+            self.config.basegame_bar_rates,
+            self.config.static_wild_values,
+            self.config.ascending_wild_values,
+            sticky=False,
+        )
 
     def apply_wild_drops_feature(self) -> None:
-        """Free-spin wild drop using the active tier's (possibly overridden) rates."""
+        """Free-spin wild drop using the active tier's (possibly overridden) rates/values."""
         params = self.bar_params
-        self.apply_wild_drops(params["rates"], params["royale_wild_values"], sticky=True)
+        self.apply_wild_drops(
+            params["rates"], params["static_wild_values"], params["ascending_wild_values"], sticky=True
+        )
 
     def get_total_mult_cap(self) -> float:
         """Active tier's total-multiplier cap, or the base-game default when no tier is active."""
@@ -153,7 +186,9 @@ class GameExecutables(GameCalculations):
         return self.config.basegame_total_mult_cap
 
     def settle_wild_multiplier(self) -> None:
-        """At spin end: sum every Royale Wild currently on screen and apply once."""
+        """At spin end: sum every Static + Ascending Wild currently on screen
+        (a plain wild has no multiplier attribute and doesn't contribute) and
+        apply once."""
         total = 0
         for reel in self.board:
             for sym in reel:

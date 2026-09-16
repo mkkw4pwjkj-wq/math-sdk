@@ -17,15 +17,15 @@ if __name__ == "__main__":
     compression = True
     profiling = False
 
-    # Smoke-test settings per CLAUDE.md: keep sims at 100/mode with optimization
-    # off until game logic is verified. Bump to the real counts in SPEC.md
-    # (base 1_000_000 / enhancer 200_000 / sutton_spins 500_000 / max_royale
-    # 200_000) and flip run_optimization on for the real run.
+    # Diagnostic run size (requested): large enough to see max_royale's payout
+    # spread and an Ascending-Wild doublings-per-spin distribution, still well
+    # short of SPEC.md's real counts (base 1_000_000 / enhancer 200_000 /
+    # sutton_spins 500_000 / max_royale 200_000), which need run_optimization on.
     num_sim_args = {
-        "base": 100,
-        "enhancer": 100,
-        "sutton_spins": 100,
-        "max_royale": 100,
+        "base": 50_000,
+        "enhancer": 20_000,
+        "sutton_spins": 10_000,
+        "max_royale": 1_000,
     }
 
     run_conditions = {
