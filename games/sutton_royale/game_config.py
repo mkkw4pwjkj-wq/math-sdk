@@ -22,10 +22,20 @@ guarantees a win on every subsequent tumble, so cascade chains couldn't
 terminate on their own - some ran past 90 tumbles. Every wild now only sits
 on the board for MAX_WILD_TUMBLES (5) tumbles before removing itself
 (gamestate.age_wilds), and every spin drops fresh - no wild persists across
-spins in any mode this pass, including features (the prior sticky-in-features
-behavior needs its own review once base is confirmed sane). A hard cap of
+spins in any mode, including features. Persistence is not coming back; it
+broke the chain-length model once already. A hard cap of
 MAX_CASCADES_PER_SPIN (15) exists independently as a backstop, per
 CLAUDE.md's original (until-now-unimplemented) requirement.
+
+v4.1: base game landed close to target once chains stopped running away,
+but features (which never persisted wilds even before v4) collapsed along
+with them - a feature is 15 spins each individually as short-lived as a
+base spin, so nothing was accumulating. Features now get their payout
+weight from crate volume and lifespan instead of persistence: BONUS_TIERS'
+rates are raised well above base's so several crates descend at once, a
+crate falls one row every two tumbles in a feature instead of one
+(gamestate.age_wilds), and each tier's total_mult_cap is raised
+independently of base's 50x so the larger sums can pay out.
 
 See README.md for the engineering decisions made to turn SPEC.md's design
 language into precomputable game logic.
@@ -39,19 +49,22 @@ from src.config.betmode import BetMode
 # Free spins awarded per initial scatter trigger tier (basegame -> freegame entry).
 TIER_FS = {"regular": 10, "super": 12, "super_hidden": 15}
 
-# Top-bar fill rates, per reel position, per game-state.
+# Top-bar fill rates, per reel position, per game-state. v4.1: raised well
+# above base's rates so several crates are typically descending at once in a
+# feature (see game_executables.age_wilds docstring) - this, not persistence,
+# is where a feature's payout accumulation now comes from.
 BONUS_TIERS = {
     "regular": {
-        "fs": 10, "total_mult_cap": 100,
-        "rates": {"empty": 0.72, "plain": 0.08, "static": 0.14, "ascending": 0.06},
+        "fs": 10, "total_mult_cap": 150,
+        "rates": {"empty": 0.52, "plain": 0.10, "static": 0.24, "ascending": 0.14},
     },
     "super": {
-        "fs": 12, "total_mult_cap": 150,
-        "rates": {"empty": 0.66, "plain": 0.09, "static": 0.16, "ascending": 0.09},
+        "fs": 12, "total_mult_cap": 250,
+        "rates": {"empty": 0.42, "plain": 0.11, "static": 0.28, "ascending": 0.19},
     },
     "super_hidden": {
-        "fs": 15, "total_mult_cap": 250,
-        "rates": {"empty": 0.55, "plain": 0.10, "static": 0.19, "ascending": 0.16},
+        "fs": 15, "total_mult_cap": 400,
+        "rates": {"empty": 0.28, "plain": 0.12, "static": 0.32, "ascending": 0.28},
     },
 }
 
@@ -308,11 +321,11 @@ class GameConfig(Config):
     def _max_royale_mode(self):
         """Guaranteed Super Hidden entry: 15 spins (Super Hidden's own default - no
         override needed), its own top-bar fill rates, total multiplier capped
-        at 350x. Static/Ascending Wild value tables are unchanged from the
+        at 600x. Static/Ascending Wild value tables are unchanged from the
         other tiers - only the fill rates differ for Max Royale."""
         override = {
-            "rates": {"empty": 0.48, "plain": 0.10, "static": 0.21, "ascending": 0.21},
-            "total_mult_cap": 350,
+            "rates": {"empty": 0.20, "plain": 0.12, "static": 0.34, "ascending": 0.34},
+            "total_mult_cap": 600,
         }
         common = {
             "reel_weights": {

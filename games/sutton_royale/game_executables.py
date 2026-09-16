@@ -22,10 +22,19 @@ removal is mathematically relevant.) A hard cap on cascades per spin
 (config.max_cascades_per_spin, 15) exists independently as a backstop -
 CLAUDE.md called for one from the start and it was never wired in until now.
 
-For this pass, wilds are NOT sticky in features - every spin (base or free)
-drops fresh, ages, and clears within itself, the same as the base game. The
-prior sticky-across-spins behavior for features needs its own review once
-base is confirmed sane, per instruction.
+Wilds are NOT sticky in features - every spin (base or free) drops fresh,
+ages, and clears within itself, the same as the base game. Persistence
+across spins is deliberately not coming back (it broke the chain-length
+model twice); instead, once base's numbers held up, features get their
+accumulation from crate volume and lifespan instead:
+  * Feature top-bar rates are raised well above base's, so several crates
+    are typically descending at once (config.bonus_tiers[tier]["rates"]).
+  * Feature crates fall one row every two tumbles instead of one
+    (age_wilds), doubling how many cascades a crate survives without
+    making it immortal.
+  * Feature total-multiplier caps are raised independently of base's
+    (config.bonus_tiers[tier]["total_mult_cap"]) so the larger sums this
+    produces can actually pay out.
 
 The one multiplier system (SPEC s7), split across two wild types (a plain
 wild has neither a value nor any of the below):
@@ -84,11 +93,16 @@ class GameExecutables(GameCalculations):
         """Every wild gets config.max_wild_tumbles (5) tumbles on the board before
         it removes itself - called once per cascade, right before tumble_game_board()
         so an expired wild is cleared in that same pass alongside any win-triggered
-        explosions."""
+        explosions. In features a crate falls one row every two tumbles instead of
+        one, so it travels the same 5-row distance at half speed - double the
+        budget rather than a separate row-position system."""
+        effective_max = self.config.max_wild_tumbles
+        if self.gametype == self.config.freegame_type:
+            effective_max *= 2
         expired = []
         for reel, age in self.wild_ages.items():
             new_age = age + 1
-            if new_age > self.config.max_wild_tumbles:
+            if new_age > effective_max:
                 expired.append(reel)
             else:
                 self.wild_ages[reel] = new_age

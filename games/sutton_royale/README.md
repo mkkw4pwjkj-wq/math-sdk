@@ -1,9 +1,78 @@
 # Sutton Royale - math-sdk implementation notes
 
 This implements SPEC.md **v3**'s wild/paytable rules (repo root, §16 for the
-v2→v3 delta) with a **v4 lifecycle fix layered on top** - see "v4: wilds now
-fall and expire" below. SPEC.md's own text is still v3; the delta is
-documented here pending a dedicated SPEC pass.
+v2→v3 delta) with **v4 lifecycle fixes layered on top** - see "v4" and
+"v4.1" below. SPEC.md's own text is still v3; the delta is documented here
+pending a dedicated SPEC pass.
+
+## v4.1: feature accumulation from crate volume/lifespan, not persistence - overshot
+
+v4 fixed base by ending runaway chains, but features - which never
+persisted wilds either, even before v4 - collapsed right along with base:
+a 15-spin Hidden became fifteen unrelated, individually-short base spins,
+so nothing accumulated. Persistence isn't coming back (it's what broke the
+chain-length model in the first place), so features now get their weight
+from crate volume and lifespan instead:
+
+- **Feature crates fall one row every two tumbles** instead of one
+  (`game_executables.age_wilds` - `effective_max` doubles when
+  `gametype == freegame_type`). Base is untouched - still one row per tumble.
+- **Feature top-bar rates raised well above base's** (`BONUS_TIERS[tier]["rates"]`
+  in `game_config.py`) so several crates are typically descending at once in
+  a feature spin.
+- **Feature total-multiplier caps raised independently of base's 50x**:
+  regular 150x, super 250x, super_hidden 400x, Max Royale 600x
+  (`BONUS_TIERS[tier]["total_mult_cap"]`, and `_max_royale_mode`'s own
+  `override`).
+
+**This overshot substantially - every mode is now hot, not cold, most of
+them by an order of magnitude or more.** Re-ran the same batch (base 50,000
+/ enhancer 20,000 / sutton_spins 10,000 / max_royale 1,000, optimization
+off):
+
+| Mode | RTP (raw x, target = 0.977×cost) | Target | Gap |
+|---|---|---|---|
+| base | 6.30x | 0.98x | 6.4x hot |
+| enhancer | 21.38x | 2.93x | 7.3x hot |
+| sutton_spins | 268.63x | 48.85x | 5.5x hot |
+| max_royale | 6,957.14x | 1,465x | 4.7x hot |
+
+**Base moved, as flagged it might.** It went from 2.59x to 6.30x - not a
+leak in the sense of feature code running during a base spin, but base
+mode's own *organic* bonus triggers (the 0.30% of base spins that land 4+
+scatters) enter free spins through the exact same `BONUS_TIERS`
+definitions every other mode uses. There's only one feature-tier rate/cap
+table in this build; raising it for "features" necessarily raises it for
+the rare bonus a base spin can trigger too, since that bonus *is* a
+feature spin once it starts. Giving base its own separate, untouched
+feature-tier table was not part of what this pass asked for, so it's
+flagged rather than fixed here.
+
+**Average payout per bonus tier** (pooled base+enhancer+sutton_spins,
+first `freeSpinTrigger` event's `totalFs` used to identify tier):
+
+| Tier | n | Avg payout | Target | Gap |
+|---|---|---|---|---|
+| regular | 785 | 1,257.73x | 116x | 10.8x over |
+| super | 396 | 2,351.46x | 229x | 10.3x over |
+| super_hidden | 1,286 | 6,551.72x | 436x | 15.0x over |
+
+**A new cascade-length clustering artifact, smaller than v3's but real.**
+The hard 15-cap still holds and the shape is far better than v3's bimodal
+70-94/110-131 split, but a secondary bump now sits at cascade 10 - exactly
+`max_wild_tumbles * 2`, the feature crate's full slowed-down lifespan.
+It's mild in base/enhancer (~1-4% at 10-11) but pronounced in Max Royale,
+where 68% top-bar fill (34% Static + 34% Ascending) means almost every
+spin carries a wild: 33.15% of all Max Royale spins hit cascade 10 exactly,
+and 19.91% hit 11. Ascending Wild doublings-per-instance also shifted back
+toward the 512x ceiling in features for the same reason (crates surviving
+twice as long): Max Royale's ceiling share rose from 9.40% (v4) to 19.15%
+(v4.1). Reported, not fixed - the requested change was rates/caps/fall
+speed, not a redesign of the lifespan curve.
+
+**Max Royale payout distribution** (n=1,000): mean 6,957.14, median
+6,149.20, 23/1,000 at the exact 20000x cap (was 18/1,000 in v4, 996/1,000
+in v3) - the spread keeps improving, it's just centered far too high now.
 
 ## v4: wilds now fall and expire, cascades are hard-capped at 15
 
