@@ -25,13 +25,15 @@ CLAUDE.md called for one from the start and it was never wired in until now.
 Wilds are NOT sticky in features - every spin (base or free) drops fresh,
 ages, and clears within itself, the same as the base game. Persistence
 across spins is deliberately not coming back (it broke the chain-length
-model twice); instead, once base's numbers held up, features get their
-accumulation from crate volume and lifespan instead:
+model once already). A crate falls one row per tumble and survives
+max_wild_tumbles (5) tumbles in every mode - base and features alike; an
+attempt at halving the fall speed in features to double a crate's lifespan
+there was reverted (see age_wilds' docstring) once it turned out to be
+sustaining a third of Max Royale's cascades by itself. Features get their
+accumulation from crate *volume* only, which is linear and easy to reason
+about:
   * Feature top-bar rates are raised well above base's, so several crates
     are typically descending at once (config.bonus_tiers[tier]["rates"]).
-  * Feature crates fall one row every two tumbles instead of one
-    (age_wilds), doubling how many cascades a crate survives without
-    making it immortal.
   * Feature total-multiplier caps are raised independently of base's
     (config.bonus_tiers[tier]["total_mult_cap"]) so the larger sums this
     produces can actually pay out.
@@ -93,16 +95,17 @@ class GameExecutables(GameCalculations):
         """Every wild gets config.max_wild_tumbles (5) tumbles on the board before
         it removes itself - called once per cascade, right before tumble_game_board()
         so an expired wild is cleared in that same pass alongside any win-triggered
-        explosions. In features a crate falls one row every two tumbles instead of
-        one, so it travels the same 5-row distance at half speed - double the
-        budget rather than a separate row-position system."""
-        effective_max = self.config.max_wild_tumbles
-        if self.gametype == self.config.freegame_type:
-            effective_max *= 2
+        explosions. One row per tumble, in every mode - base and features alike.
+        v4.1 tried halving the fall speed in features to double a crate's
+        lifespan there; a third of Max Royale spins were terminating on the exact
+        frame the last crate expired, which meant the slowed fall - not the
+        symbols - was sustaining the chains, and doublings are exponential in
+        however long a wild survives, so it was never a mild effect. Reverted -
+        feature escalation is volume-only now (config.bonus_tiers rates/caps)."""
         expired = []
         for reel, age in self.wild_ages.items():
             new_age = age + 1
-            if new_age > effective_max:
+            if new_age > self.config.max_wild_tumbles:
                 expired.append(reel)
             else:
                 self.wild_ages[reel] = new_age

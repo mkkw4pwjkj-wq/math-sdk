@@ -30,12 +30,18 @@ CLAUDE.md's original (until-now-unimplemented) requirement.
 v4.1: base game landed close to target once chains stopped running away,
 but features (which never persisted wilds even before v4) collapsed along
 with them - a feature is 15 spins each individually as short-lived as a
-base spin, so nothing was accumulating. Features now get their payout
-weight from crate volume and lifespan instead of persistence: BONUS_TIERS'
-rates are raised well above base's so several crates descend at once, a
-crate falls one row every two tumbles in a feature instead of one
-(gamestate.age_wilds), and each tier's total_mult_cap is raised
-independently of base's 50x so the larger sums can pay out.
+base spin, so nothing was accumulating. First attempt raised BONUS_TIERS'
+rates well above base's *and* halved the fall speed in features to double
+a crate's lifespan there - massive overshoot (every mode 4.7x-7.3x over
+target), traced to the slowed fall specifically: a third of Max Royale's
+spins were terminating on the exact frame a crate expired, meaning the
+slow fall was sustaining the chain by itself, and doublings compound
+exponentially over however long a wild survives, so it was never a mild
+lever. Fall speed is reverted to one row per tumble everywhere (base and
+features alike, MAX_WILD_TUMBLES=5 uniformly) - feature escalation comes
+from crate *volume* only (BONUS_TIERS rates, pulled back to roughly
+halfway between v3's original and the overshoot) plus each tier's
+total_mult_cap raised independently of base's 50x.
 
 See README.md for the engineering decisions made to turn SPEC.md's design
 language into precomputable game logic.
@@ -49,22 +55,26 @@ from src.config.betmode import BetMode
 # Free spins awarded per initial scatter trigger tier (basegame -> freegame entry).
 TIER_FS = {"regular": 10, "super": 12, "super_hidden": 15}
 
-# Top-bar fill rates, per reel position, per game-state. v4.1: raised well
-# above base's rates so several crates are typically descending at once in a
-# feature (see game_executables.age_wilds docstring) - this, not persistence,
-# is where a feature's payout accumulation now comes from.
+# Top-bar fill rates, per reel position, per game-state. Raised above base's
+# rates so several crates are typically descending at once in a feature -
+# this, not persistence or a slower fall, is where a feature's payout
+# accumulation comes from (see game_executables.age_wilds docstring). Pulled
+# back from a first attempt that pushed super_hidden's fill to 72% (28%
+# empty) - that made ways counts explode on top of an already-reverted
+# slow-fall change; this is the halfway point between the original v3 rates
+# and that overshoot.
 BONUS_TIERS = {
     "regular": {
-        "fs": 10, "total_mult_cap": 150,
-        "rates": {"empty": 0.52, "plain": 0.10, "static": 0.24, "ascending": 0.14},
+        "fs": 10, "total_mult_cap": 120,
+        "rates": {"empty": 0.64, "plain": 0.09, "static": 0.19, "ascending": 0.08},
     },
     "super": {
-        "fs": 12, "total_mult_cap": 250,
-        "rates": {"empty": 0.42, "plain": 0.11, "static": 0.28, "ascending": 0.19},
+        "fs": 12, "total_mult_cap": 190,
+        "rates": {"empty": 0.58, "plain": 0.10, "static": 0.21, "ascending": 0.11},
     },
     "super_hidden": {
-        "fs": 15, "total_mult_cap": 400,
-        "rates": {"empty": 0.28, "plain": 0.12, "static": 0.32, "ascending": 0.28},
+        "fs": 15, "total_mult_cap": 300,
+        "rates": {"empty": 0.48, "plain": 0.11, "static": 0.24, "ascending": 0.17},
     },
 }
 
@@ -321,11 +331,11 @@ class GameConfig(Config):
     def _max_royale_mode(self):
         """Guaranteed Super Hidden entry: 15 spins (Super Hidden's own default - no
         override needed), its own top-bar fill rates, total multiplier capped
-        at 600x. Static/Ascending Wild value tables are unchanged from the
+        at 420x. Static/Ascending Wild value tables are unchanged from the
         other tiers - only the fill rates differ for Max Royale."""
         override = {
-            "rates": {"empty": 0.20, "plain": 0.12, "static": 0.34, "ascending": 0.34},
-            "total_mult_cap": 600,
+            "rates": {"empty": 0.42, "plain": 0.11, "static": 0.26, "ascending": 0.21},
+            "total_mult_cap": 420,
         }
         common = {
             "reel_weights": {

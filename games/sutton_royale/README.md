@@ -1,11 +1,88 @@
 # Sutton Royale - math-sdk implementation notes
 
 This implements SPEC.md **v3**'s wild/paytable rules (repo root, §16 for the
-v2→v3 delta) with **v4 lifecycle fixes layered on top** - see "v4" and
-"v4.1" below. SPEC.md's own text is still v3; the delta is documented here
-pending a dedicated SPEC pass.
+v2→v3 delta) with **v4 lifecycle fixes layered on top** - see "v4", "v4.1",
+and "v4.2" below. SPEC.md's own text is still v3; the delta is documented
+here pending a dedicated SPEC pass.
 
-## v4.1: feature accumulation from crate volume/lifespan, not persistence - overshot
+## v4.2: fall-speed revert + rates/caps pulled back - within ~3x of target
+
+v4.1's diagnosis was right (base moving is expected and correctly
+explained by the shared `BONUS_TIERS` table - see that section's own
+writeup, unchanged) but its fix overshot by stacking three multiplicative
+levers - crate volume, crate lifespan, and raised caps - without checking
+they compound rather than add. The cascade-10 clustering was the tell: a
+crate falling one row per *two* tumbles in a feature doubled its lifespan
+there, and 33% of Max Royale spins were terminating on that exact expiry
+frame - meaning the slowed fall, not the paying symbols, was sustaining
+the chain, and Ascending Wild doublings compound exponentially over
+however long a wild survives. That was never a mild effect.
+
+**Fall speed is fully reverted**: `age_wilds()` no longer branches on
+`gametype` - every crate falls one row per tumble and survives
+`max_wild_tumbles` (5) tumbles, base and features alike, exactly as
+introduced in v4. Feature escalation is volume-only now.
+
+**Rates and caps pulled back to roughly halfway between v3's original and
+v4.1's overshoot**:
+
+| | regular | super | super_hidden | max_royale |
+|---|---|---|---|---|
+| empty | 64% | 58% | 48% | 42% |
+| plain | 9% | 10% | 11% | 11% |
+| static | 19% | 21% | 24% | 26% |
+| ascending | 8% | 11% | 17% | 21% |
+| total_mult_cap | 120x | 190x | 300x | 420x |
+
+Base's own rates/cap are untouched (50x cap, original fill rates).
+
+**Re-ran the same batch** (base 50,000 / enhancer 20,000 / sutton_spins
+10,000 / max_royale 1,000, optimization off). Target this pass was "within
+about 3x," not exact - the optimizer takes it from there:
+
+| Mode | RTP (raw x) | Target (0.977×cost) | Gap |
+|---|---|---|---|
+| base | 2.71x | 0.98x | 2.8x hot |
+| enhancer | 6.37x | 2.93x | 2.2x hot |
+| sutton_spins | 16.69x | 48.85x | 2.9x cold |
+| max_royale | 758.44x | 1,465x | 1.9x cold |
+
+All four now land inside the requested band. Any-win rate, bonus-award
+rate, and bonus count are unchanged from every prior v4 pass (trigger
+odds weren't touched): base 22.28%/0.30%/149, enhancer 22.60%/1.07%/215,
+sutton_spins 80.92%/11.03%/1,103, max_royale 100%/100%/1,000.
+
+**Average payout per bonus tier** (pooled base+enhancer+sutton_spins):
+
+| Tier | n | Avg payout | Target | Gap |
+|---|---|---|---|---|
+| regular | 785 | 79.90x | 116x | 0.69x of target (31% cold) |
+| super | 396 | 136.86x | 229x | 0.60x of target (40% cold) |
+| super_hidden | 1,286 | 800.30x | 436x | 1.84x of target (84% hot) |
+
+All three inside the ~3x band. One caveat worth flagging: the per-mode
+breakdown shows base's own super_hidden bucket averaging 9,179.56x on
+just 11 samples - that's the "wincap" forced distribution's quota
+(0.0001, ~5 of base's 50,000 sims) landing in the same bucket as the
+handful of organic 6-scatter triggers, and at n=11 a couple of forced
+20000x hits dominate the mean. The pooled figure (800.30x, n=1,286) isn't
+meaningfully distorted by this since sutton_spins' much larger n=245
+sample anchors it, but the base-only and enhancer-only (n=30)
+super_hidden numbers shouldn't be read as representative on their own.
+
+**Cascade-length distribution is back to a clean single-mode decay** - the
+cascade-10 clustering from v4.1 is gone (confirms it was the slowed fall,
+not the volume increase). Max chain length across all 150,547 spins is 15
+(hard cap, hit twice), with the same small bump at cascade 5 seen in the
+original v4 pass (`max_wild_tumbles` itself, now uniform across modes
+again) rather than a new one at 10.
+
+**Ascending Wild doublings** are also back to a healthy decay - Max
+Royale's ceiling share is 10.65% (v4: 9.40%, v4.1: 19.15% before the
+revert), consistent with fall speed being the dominant driver of ceiling
+clustering, not fill rate.
+
+## v4.1: feature accumulation from crate volume/lifespan, not persistence - overshot (superseded by v4.2 above)
 
 v4 fixed base by ending runaway chains, but features - which never
 persisted wilds either, even before v4 - collapsed right along with base:
