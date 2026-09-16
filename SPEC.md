@@ -7,7 +7,7 @@ Target platform: Stake Engine (math-sdk + frontend-sdk)
 | | |
 |---|---|
 | Grid | 6×5 main, plus 6×1 top bar |
-| Win system | Scatter pays, 8+ anywhere |
+| Win system | All-ways, consecutive from reel 1, max 15,625 ways |
 | Cascades | Yes, until no win |
 | RTP | 97.70% (2.30% edge) |
 | Max win | 20,000× (hard cap, terminates round) |
@@ -29,52 +29,69 @@ Relationship that must hold: `buy price × 0.977 = average payout`
 
 ## Symbols
 
-Eight paying symbols (L1–L4 low, H1–H4 high), one scatter. Multiplier orbs
-live ONLY in the top bar and never enter the main grid. No wild symbol exists
-anywhere in the game — scatter pays has nothing for a wild to substitute
-into.
+Eight paying symbols (L1–L4 low, H1–H4 high), one scatter, one wild. Wins
+require matching symbols on consecutive reels starting from reel 1; ways =
+product of matching symbols per reel (max 5**6 = 15,625 ways on this 6×5
+grid). Multiplier orbs live ONLY in the top bar and never enter the main
+grid. The wild lives on the main grid, substitutes for any paying symbol,
+and carries its own multiplier value that multiplies its reel's contribution
+to the ways count — a wild worth 3× on a reel counts as 3 matching symbols
+there instead of 1. This is a separate mechanic from the top bar's orbs.
 
 ## Paytable
 
-Payout as multiple of total bet, by symbol count.
+Payout as a multiple of total bet, per way, by consecutive-reel count (3 is
+the minimum to pay, 6 is the maximum).
 
-| Symbol | 8–9 | 10–11 | 12+ |
-|---|---|---|---|
-| L1 | 0.20 | 0.40 | 1.00 |
-| L2 | 0.25 | 0.50 | 1.50 |
-| L3 | 0.40 | 0.90 | 2.00 |
-| L4 | 0.50 | 1.20 | 2.50 |
-| H4 | 0.80 | 2.00 | 5.00 |
-| H3 | 1.20 | 3.00 | 8.00 |
-| H2 | 2.00 | 5.00 | 12.00 |
-| H1 | 5.00 | 10.00 | 25.00 |
+| Symbol | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|
+| L1 | 0.10 | 0.10 | 0.10 | 0.10 |
+| L2 | 0.10 | 0.10 | 0.10 | 0.10 |
+| L3 | 0.10 | 0.10 | 0.10 | 0.20 |
+| L4 | 0.10 | 0.10 | 0.10 | 0.20 |
+| H4 | 0.10 | 0.10 | 0.20 | 0.30 |
+| H3 | 0.10 | 0.10 | 0.20 | 0.40 |
+| H2 | 0.10 | 0.20 | 0.30 | 0.60 |
+| H1 | 0.10 | 0.20 | 0.40 | 1.00 |
 
-Seed values. Optimizer will move H1 most.
+Placeholder seed values, held near the RGS's 0.10x payout floor on purpose:
+ways (up to 15,625×), the wild's reel multiplier, and the top bar's bank all
+multiply the same win, so per-way base values need to be far smaller than a
+scatter-pays table's. Optimizer will move these once the real per-way numbers
+are available.
 
 ## Reel strip weights
 
-Entries per 100 on each strip.
+Entries per 100 on each strip. Reel 1 is a distinct "anchor" reel carrying
+more premiums than reels 2–6 — nothing pays without a match on reel 1 in an
+all-ways game. Reel 6 keeps the old low-premium "edge" character.
 
-| Symbol | Reels 2–5 | Reels 1 & 6 | Expected on grid |
-|---|---|---|---|
-| L1 | 17 | 19 | 5.1 |
-| L2 | 15 | 16 | 4.5 |
-| L3 | 14 | 14 | 4.2 |
-| L4 | 13 | 13 | 3.9 |
-| H4 | 12 | 12 | 3.6 |
-| H3 | 10 | 10 | 3.0 |
-| H2 | 9 | 8 | 2.7 |
-| H1 | 8 | 6 | 2.4 |
-| Scatter | 2 | 2 | 0.6 |
-| **Total** | **100** | **100** | **30** |
-
-Edge reels carry fewer premiums — lifts volatility without touching the paytable.
+| Symbol | Reel 1 (anchor) | Reels 2–5 | Reel 6 (edge) | Expected on grid |
+|---|---|---|---|---|
+| L1 | 14 | 16 | 18 | 5.0 |
+| L2 | 11 | 14 | 15 | 4.1 |
+| L3 | 10 | 13 | 14 | 3.8 |
+| L4 | 9 | 12 | 12 | 3.4 |
+| H4 | 17 | 12 | 12 | 3.9 |
+| H3 | 14 | 10 | 10 | 3.3 |
+| H2 | 11 | 9 | 8 | 2.8 |
+| H1 | 8 | 8 | 6 | 2.3 |
+| Wild | 4 | 4 | 3 | 1.1 |
+| Scatter | 2 | 2 | 2 | 0.6 |
+| **Total** | **100** | **100** | **100** | **30** |
 
 **Scatters do not tumble.** They hold position and never clear. If they
 participate in cascades the trigger rate drifts with cascade depth.
 
 Expect low weights to come back hot on hit frequency in the first sim run.
 Trim 2–3 points rather than starting low.
+
+## Grid wild multiplier
+
+Each wild draws a one-shot multiplier value for the spin: 2× (90%), 3× (10%).
+Placeholder/seed, kept modest on purpose — this value compounds
+multiplicatively across up to 6 reels (via the ways count itself), so it
+stacks hard with the top bar's bank below.
 
 ## Top bar
 
@@ -226,7 +243,7 @@ run — an uncapped tail makes book size unpredictable.
 2. Run `fifty_fifty` end to end and upload to ACP — learn the RGS handshake on
    trivial logic first
 3. Copy a sample into `games/sutton_royale/`. Set grid, symbols, paytable
-4. Wire scatter-pays win calculator and tumble loop. Add iteration guard
+4. Wire all-ways win calculator and tumble loop. Add iteration guard
 5. Build top bar as separate region. Ladder and bank as independent state
 6. Add three tiers with differentiated conditions. Retrigger capped at 40
 7. 100-sim smoke tests per mode. Check event ordering
@@ -249,6 +266,14 @@ outcomes is a live regulatory issue. Keep it out of a first submission.
 
 Mechanics and math structure are not protectable. Names, art and trade dress
 are. Every feature label here is original to this game.
+
+**Max Royale needs a real pass before it can ship.** Under the placeholder
+per-way paytable above, a 100-sim smoke test hit the 20,000× cap on every
+single simulation — bank growth (unchanged mechanic) over 20 guaranteed
+spins at Max Royale's own 75–100% orb rate / minimum-orb-8 override reliably
+overwhelms even floor-value (0.10x) ways wins. The payout-band table further
+up assumed scatter-pays-scale wins; it will not hold until the real per-way
+paytable is optimized against this mode's specific top-bar override.
 
 ---
 

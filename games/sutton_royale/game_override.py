@@ -1,6 +1,7 @@
 """Game-specific overrides/extensions of universal state.py functions."""
 
 from game_executables import GameExecutables
+from src.calculations.statistics import get_random_outcome
 
 
 class GameStateOverride(GameExecutables):
@@ -29,9 +30,14 @@ class GameStateOverride(GameExecutables):
         self.bank = params["bank_open"]
 
     def assign_special_sym_function(self):
-        # No special symbols (wilds/orbs) ever land on the main grid - the top
-        # bar is custom state, not engine Symbol objects - so nothing to assign.
-        self.special_symbol_functions = {}
+        # Wild ("W") is the only special symbol living on the main grid - the
+        # top bar's orbs are custom state, not engine Symbol objects.
+        self.special_symbol_functions = {"W": [self.assign_mult_property]}
+
+    def assign_mult_property(self, symbol):
+        """Assign the grid wild's one-shot multiplier value for this spin."""
+        multiplier_value = get_random_outcome(self.get_current_distribution_conditions()["mult_values"])
+        symbol.assign_attribute({"multiplier": multiplier_value})
 
     def check_repeat(self) -> None:
         """Verify final win matches required betmode conditions."""

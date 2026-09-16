@@ -1,6 +1,15 @@
-"""Game specific executable functions - the top bar (ladder + bank) mechanic.
+"""Game specific executable functions.
 
-Two independent motions, drawn straight from SPEC.md:
+Main grid: all-ways wins via the SDK's src.calculations.ways calculator. Wild
+("W") substitutes for any paying symbol; when it carries a multiplier value
+(assigned in game_override.py's assign_mult_property) it multiplies its
+reel's contribution to the ways count (multiplier_strategy="symbol" - see
+Ways.get_ways_data). Ways doesn't tag winning positions for the tumble
+engine, so mark_exploding_ways_wins() does that explicitly, mirroring what
+src.calculations.scatter did for the old scatter-pays win type.
+
+Top bar (ladder + bank), unaffected by the ways switch - two independent
+motions, drawn straight from SPEC.md:
   * Ladder - within one spin, every multiplier orb currently on the bar
     doubles its own value each time a cascade produces a win. Capped at 512x.
     Resets (redrawn from scratch) at the start of every spin.
@@ -8,13 +17,12 @@ Two independent motions, drawn straight from SPEC.md:
     total that persists for the rest of the feature. Every spin's win is
     multiplied by max(1, bank).
 
-There is no wild symbol anywhere in this game - scatter pays has nothing for
-a wild to substitute into, so the top bar carries only "empty" and
-"multiplier orb" content. See README.md for the full rationale.
+The top bar carries only "empty" and "multiplier orb" content - it has no
+wild of its own; the grid wild above is a separate, unrelated mechanic.
 """
 
 from game_calculations import GameCalculations
-from src.calculations.scatter import Scatter
+from src.calculations.ways import Ways
 from src.calculations.statistics import get_random_outcome
 from game_events import top_bar_reveal_event, top_bar_ladder_event, top_bar_bank_event
 from src.events.events import (
@@ -28,16 +36,23 @@ class GameExecutables(GameCalculations):
     """Game specific executable functions."""
 
     # ------------------------------------------------------------------
-    # Scatter-pays win evaluation (main grid)
+    # All-ways win evaluation (main grid)
     # ------------------------------------------------------------------
-    def get_scatterpays_update_wins(self):
-        """Evaluate scatter-pay wins on the main grid (board modified in-place)."""
-        self.win_data = Scatter.get_scatterpay_wins(self.config, self.board, global_multiplier=self.global_multiplier)
-        Scatter.record_scatter_wins(self)
+    def get_ways_update_wins(self):
+        """Evaluate all-ways wins on the main grid, then mark winning positions to tumble."""
+        self.win_data = Ways.get_ways_data(self.config, self.board, multiplier_strategy="symbol")
         self.win_manager.tumble_win = self.win_data["totalWin"]
         self.win_manager.update_spinwin(self.win_data["totalWin"])
         if self.win_data["totalWin"] > 0:
+            Ways.record_ways_wins(self)
+            self.mark_exploding_ways_wins()
             self.apply_top_bar_ladder()
+
+    def mark_exploding_ways_wins(self) -> None:
+        """Ways.get_ways_data doesn't flag positions for Tumble - flag them here instead."""
+        for win in self.win_data["wins"]:
+            for pos in win["positions"]:
+                self.board[pos["reel"]][pos["row"]].explode = True
 
     # ------------------------------------------------------------------
     # Top bar: draw / ladder / bank

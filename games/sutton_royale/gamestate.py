@@ -14,12 +14,12 @@ class GameState(GameStateOverride):
             self.draw_top_bar_basegame()
             self.draw_board()
 
-            self.get_scatterpays_update_wins()
+            self.get_ways_update_wins()
             self.emit_tumble_win_events()
 
             while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
                 self.tumble_game_board()
-                self.get_scatterpays_update_wins()
+                self.get_ways_update_wins()
                 self.emit_tumble_win_events()
 
             self.set_end_tumble_event()
@@ -40,12 +40,12 @@ class GameState(GameStateOverride):
             self.draw_top_bar_feature()
             self.draw_board()
 
-            self.get_scatterpays_update_wins()
+            self.get_ways_update_wins()
             self.emit_tumble_win_events()
 
             while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
                 self.tumble_game_board()
-                self.get_scatterpays_update_wins()
+                self.get_ways_update_wins()
                 self.emit_tumble_win_events()
 
             self.set_end_tumble_event()

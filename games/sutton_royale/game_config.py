@@ -1,12 +1,15 @@
 """Sutton Royale game configuration.
 
-Grid: 6x5 scatter-pays, cascading (tumble) until no win. A separate 6x1
-"top bar" sits above the grid holding multiplier orbs; see gamestate.py /
-game_executables.py for the ladder+bank mechanic. There is no wild symbol
-anywhere in the game - scatter pays has nothing for a wild to substitute
-into, so the top bar carries only empty / multiplier-orb content. See
-README.md in this directory for the full set of engineering decisions made
-to turn SPEC.md's design language into precomputable game logic.
+All-ways grid: 6x5, wins on consecutive-from-reel-1 matches, ways = product of
+matching symbols per reel (max 5**6 = 15,625 ways). Wild ("W") sits on the
+main grid, substitutes for any paying symbol, and carries a multiplier value
+that multiplies its reel's contribution to the ways count (src.calculations.ways
+`multiplier_strategy="symbol"` - see game_executables.py). Cascading (tumble)
+continues until no win. A separate 6x1 "top bar" sits above the grid holding
+multiplier orbs - unrelated to the grid wild - see game_executables.py for the
+ladder+bank mechanic. See README.md in this directory for the full set of
+engineering decisions made to turn SPEC.md's design language into
+precomputable game logic.
 """
 
 import os
@@ -32,6 +35,14 @@ ORB_START_VALUES = {2: 40, 4: 25, 8: 18, 16: 12, 32: 5}
 LADDER_CAP = 512
 MAX_TOTAL_FREESPINS = 40
 
+# Grid wild multiplier draw (a one-shot value per wild per spin, not the top
+# bar's ladder). Placeholder/seed - same rationale as the paytable below. Kept
+# modest because multiplier_strategy="symbol" compounds *multiplicatively*
+# across up to 6 reels (a wild's value replaces "+1" with "+value" in that
+# reel's ways count), on top of the ways count itself and the top bar's bank -
+# three multiplicative mechanics stacking, so small per-mechanic values matter.
+WILD_MULT_VALUES = {2: 90, 3: 10}
+
 
 class GameConfig(Config):
     """Sutton Royale configuration class."""
@@ -49,7 +60,7 @@ class GameConfig(Config):
         self.provider_number = 0
         self.working_name = "Sutton Royale"
         self.wincap = 20000.0
-        self.win_type = "scatter"
+        self.win_type = "ways"
         self.rtp = 0.9770
         self.construct_paths()
 
@@ -58,27 +69,31 @@ class GameConfig(Config):
         self.num_reels = 6
         self.num_rows = [5] * self.num_reels
 
-        t1, t2, t3 = (8, 9), (10, 11), (12, self.num_reels * max(self.num_rows))
-        # SPEC.md's L2 8-9 payout (0.25) is bumped to 0.30 here: the RGS lookup-table
-        # format requires every payout be a multiple of 0.10x, and these are seed
-        # values the optimizer will move anyway.
-        pay_group = {
-            (t1, "L1"): 0.20, (t2, "L1"): 0.40, (t3, "L1"): 1.00,
-            (t1, "L2"): 0.30, (t2, "L2"): 0.50, (t3, "L2"): 1.50,
-            (t1, "L3"): 0.40, (t2, "L3"): 0.90, (t3, "L3"): 2.00,
-            (t1, "L4"): 0.50, (t2, "L4"): 1.20, (t3, "L4"): 2.50,
-            (t1, "H4"): 0.80, (t2, "H4"): 2.00, (t3, "H4"): 5.00,
-            (t1, "H3"): 1.20, (t2, "H3"): 3.00, (t3, "H3"): 8.00,
-            (t1, "H2"): 2.00, (t2, "H2"): 5.00, (t3, "H2"): 12.00,
-            (t1, "H1"): 5.00, (t2, "H1"): 10.00, (t3, "H1"): 25.00,
+        # Per-way paytable by consecutive-reel count (min 3 reels to pay, as is
+        # standard for ways games). PLACEHOLDER SEED VALUES: the actual per-way
+        # table was referenced ("values below") but not included in the request
+        # that asked for this switch - these are a first-pass, internally
+        # consistent stand-in (every value a multiple of 0.10x, per the RGS
+        # lookup-table format) pending the real numbers. Kept an order of
+        # magnitude below a naive scatter-pays-style scaling because ways count
+        # (up to 15,625) and the wild reel-multiplier both multiply the same
+        # win before the top bar's bank multiplies it again - see README.md.
+        self.paytable = {
+            (3, "L1"): 0.10, (4, "L1"): 0.10, (5, "L1"): 0.10, (6, "L1"): 0.10,
+            (3, "L2"): 0.10, (4, "L2"): 0.10, (5, "L2"): 0.10, (6, "L2"): 0.10,
+            (3, "L3"): 0.10, (4, "L3"): 0.10, (5, "L3"): 0.10, (6, "L3"): 0.20,
+            (3, "L4"): 0.10, (4, "L4"): 0.10, (5, "L4"): 0.10, (6, "L4"): 0.20,
+            (3, "H4"): 0.10, (4, "H4"): 0.10, (5, "H4"): 0.20, (6, "H4"): 0.30,
+            (3, "H3"): 0.10, (4, "H3"): 0.10, (5, "H3"): 0.20, (6, "H3"): 0.40,
+            (3, "H2"): 0.10, (4, "H2"): 0.20, (5, "H2"): 0.30, (6, "H2"): 0.60,
+            (3, "H1"): 0.10, (4, "H1"): 0.20, (5, "H1"): 0.40, (6, "H1"): 1.00,
         }
-        self.paytable = self.convert_range_table(pay_group)
 
         self.include_padding = True
-        # "wild" must exist as a key (even empty) - src.calculations.scatter.Scatter
-        # looks up config.special_symbols["wild"] unconditionally. There is no wild
-        # symbol anywhere in this game (main grid or top bar), so the list stays empty.
-        self.special_symbols = {"wild": [], "scatter": ["S"]}
+        # Wild ("W") now lives on the main grid: substitutes for any paying
+        # symbol and (via the "multiplier" attribute assigned below) multiplies
+        # its reel's contribution to the ways count.
+        self.special_symbols = {"wild": ["W"], "scatter": ["S"], "multiplier": []}
 
         self.freespin_triggers = {
             self.basegame_type: {4: TIER_FS["regular"], 5: TIER_FS["super"], **{n: TIER_FS["super_hidden"] for n in range(6, 11)}},
@@ -94,6 +109,7 @@ class GameConfig(Config):
         self.orb_start_values = ORB_START_VALUES
         self.basegame_bar_rates = BASEGAME_BAR_RATES
         self.bonus_tiers = BONUS_TIERS
+        self.wild_mult_values = WILD_MULT_VALUES
 
         reels = {"BR0": "BR0.csv", "FR0": "FR0.csv", "ENH0": "ENH0.csv"}
         self.reels = {}
@@ -122,6 +138,7 @@ class GameConfig(Config):
                 "forced_tier": tier,
                 "force_wincap": False,
                 "force_freegame": True,
+                "mult_values": self.wild_mult_values,
             }
             if extra_conditions:
                 cond.update(extra_conditions)
@@ -137,6 +154,7 @@ class GameConfig(Config):
             "force_wincap": True,
             "force_freegame": True,
             "top_bar_override": {"orb_rate": 1.0, "min_orb": 32, "bank_open": 200},
+            "mult_values": self.wild_mult_values,
         }
         if extra_conditions:
             wincap_cond.update(extra_conditions)
@@ -153,6 +171,7 @@ class GameConfig(Config):
             "reel_weights": {self.basegame_type: {base_reel_id: 1}},
             "force_wincap": False,
             "force_freegame": False,
+            "mult_values": self.wild_mult_values,
         }
         if extra_conditions:
             zero_cond.update(extra_conditions)
@@ -162,6 +181,7 @@ class GameConfig(Config):
             "reel_weights": {self.basegame_type: {base_reel_id: 1}},
             "force_wincap": False,
             "force_freegame": False,
+            "mult_values": self.wild_mult_values,
         }
         if extra_conditions:
             basegame_cond.update(extra_conditions)
@@ -229,6 +249,7 @@ class GameConfig(Config):
                         "forced_tier": tier,
                         "force_wincap": False,
                         "force_freegame": True,
+                        "mult_values": self.wild_mult_values,
                     },
                 )
             )
@@ -240,6 +261,7 @@ class GameConfig(Config):
                     "reel_weights": {self.basegame_type: {"BR0": 1}},
                     "force_wincap": False,
                     "force_freegame": False,
+                    "mult_values": self.wild_mult_values,
                 },
             )
         )
@@ -266,6 +288,7 @@ class GameConfig(Config):
             "scatter_triggers": {6: 1},
             "forced_tier": "super_hidden",
             "force_freegame": True,
+            "mult_values": self.wild_mult_values,
         }
         wincap_override = dict(override)
         wincap_override.update({"orb_rate": 1.0, "min_orb": 32})
