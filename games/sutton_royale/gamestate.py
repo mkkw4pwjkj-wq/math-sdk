@@ -19,7 +19,13 @@ class GameState(GameStateOverride):
             self.get_ways_update_wins()
             self.emit_tumble_win_events()
 
-            while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
+            while (
+                self.win_data["totalWin"] > 0
+                and not self.wincap_triggered
+                and self.cascade_count < self.config.max_cascades_per_spin
+            ):
+                self.cascade_count += 1
+                self.age_wilds()
                 self.tumble_game_board()
                 self.get_ways_update_wins()
                 self.emit_tumble_win_events()
@@ -46,7 +52,13 @@ class GameState(GameStateOverride):
             self.get_ways_update_wins()
             self.emit_tumble_win_events()
 
-            while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
+            while (
+                self.win_data["totalWin"] > 0
+                and not self.wincap_triggered
+                and self.cascade_count < self.config.max_cascades_per_spin
+            ):
+                self.cascade_count += 1
+                self.age_wilds()
                 self.tumble_game_board()
                 self.get_ways_update_wins()
                 self.emit_tumble_win_events()

@@ -1,4 +1,4 @@
-"""Game-specific overrides/extensions of universal state.py functions - SPEC v2."""
+"""Game-specific overrides/extensions of universal state.py functions - SPEC v4."""
 
 import math
 
@@ -6,7 +6,7 @@ from game_executables import GameExecutables
 
 
 def quantize_payout(amount: float) -> float:
-    """Round to the nearest 0.10x; anything below 0.05x becomes 0 (SPEC v2 s9).
+    """Round to the nearest 0.10x; anything below 0.05x becomes 0 (SPEC s9).
     This is the same rule stated twice in the spec - round-half-up onto the
     0.10x grid already sends [0, 0.05) to 0."""
     if amount <= 0:
@@ -19,13 +19,15 @@ class GameStateOverride(GameExecutables):
 
     def reset_book(self):
         super().reset_book()
-        self.locked_wilds = {}
+        self.wild_ages = {}
+        self.cascade_count = 0
         self.current_tier = None
         self.bar_params = None
 
     def reset_fs_spin(self):
         super().reset_fs_spin()
-        self.locked_wilds = {}
+        self.wild_ages = {}
+        self.cascade_count = 0
         # Called once during GeneralGameState.__init__, before betmode/criteria
         # are assigned by run_sims() - nothing to resolve yet in that case.
         if not getattr(self, "betmode", None):
@@ -44,7 +46,7 @@ class GameStateOverride(GameExecutables):
         self.special_symbol_functions = {}
 
     def update_final_win(self) -> None:
-        """Quantize the aggregated round payout to the nearest 0.10x (SPEC v2 s9),
+        """Quantize the aggregated round payout to the nearest 0.10x (SPEC s9),
         rather than the engine's default nearest-cent rounding."""
         basewin = quantize_payout(self.win_manager.basegame_wins)
         freewin = quantize_payout(self.win_manager.freegame_wins)

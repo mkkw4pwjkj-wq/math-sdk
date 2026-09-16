@@ -1,31 +1,31 @@
-"""Sutton Royale game configuration - SPEC v3.
+"""Sutton Royale game configuration - SPEC v4.
 
 All-ways grid: 6x5, wins on consecutive-from-reel-1 matches, ways = product of
 matching symbols per reel (max 5**6 = 15,625 ways). There is no grid wild -
 wilds enter only from the 6x1 top bar (one position per reel), where they drop
-directly onto their reel for that spin and substitute for any paying symbol.
+directly onto their reel and substitute for any paying symbol.
 
-v3 splits what v2 called "Royale Wild" into two separate specials (the actual
-Super Wild Cat pattern this game is modeled on: Panther plain, Tiger/FatCat
-grow, and the growing ones are rare) - collapsing them into one symbol that
-both grew AND landed often is what caused v2's saturation, not a missing cap:
+Two wild types (Super Wild Cat's actual pattern - Panther plain, Tiger/FatCat
+grow and are rare):
   * **Plain wild** - substitutes only, no value.
-  * **Static Wild** - substitutes, carries a fixed multiplier value, never
-    grows.
+  * **Static Wild** - substitutes, carries a fixed multiplier value, never grows.
   * **Ascending Wild** - substitutes, carries a multiplier value that doubles
     in place every time it participates in a winning tumble. No cap on the
-    number of doublings, only a per-wild value ceiling (512x) - at a 3%
-    base landing rate that ceiling should almost never actually bind.
+    number of doublings, only a per-wild value ceiling (512x).
   * At the end of a spin's whole cascade sequence, every Static + Ascending
     Wild value currently on screen sums and applies to that spin's win
     exactly once (capped per game-state - base/regular/super/hidden/
     max_royale).
-  * In free spins, a landed wild locks to its reel for the rest of the
-    feature, but its value resets to its original landed value at the start
-    of every subsequent spin (an Ascending Wild can still double within that
-    spin's own cascades - it just doesn't carry a compounded value forward
-    spin over spin, which is what let v2's version run away). In the base
-    game, wilds are gone the moment the spin ends.
+
+v4: a wild that never leaves the board and substitutes for anything
+guarantees a win on every subsequent tumble, so cascade chains couldn't
+terminate on their own - some ran past 90 tumbles. Every wild now only sits
+on the board for MAX_WILD_TUMBLES (5) tumbles before removing itself
+(gamestate.age_wilds), and every spin drops fresh - no wild persists across
+spins in any mode this pass, including features (the prior sticky-in-features
+behavior needs its own review once base is confirmed sane). A hard cap of
+MAX_CASCADES_PER_SPIN (15) exists independently as a backstop, per
+CLAUDE.md's original (until-now-unimplemented) requirement.
 
 See README.md for the engineering decisions made to turn SPEC.md's design
 language into precomputable game logic.
@@ -63,6 +63,8 @@ BASEGAME_TOTAL_MULT_CAP = 50
 STATIC_WILD_VALUES = {2: 38, 3: 26, 5: 19, 10: 11, 25: 5, 50: 1}
 ASCENDING_WILD_VALUES = {2: 60, 3: 30, 5: 10}
 LADDER_CAP = 512  # per-wild value ceiling (only the Ascending Wild ever grows toward it)
+MAX_WILD_TUMBLES = 5  # a wild removes itself after this many tumbles on the board
+MAX_CASCADES_PER_SPIN = 15  # hard backstop, independent of the wild age-out fix
 MAX_TOTAL_FREESPINS = 40
 
 
@@ -133,13 +135,15 @@ class GameConfig(Config):
 
         self.max_total_freespins = MAX_TOTAL_FREESPINS
         self.ladder_cap = LADDER_CAP
+        self.max_wild_tumbles = MAX_WILD_TUMBLES
+        self.max_cascades_per_spin = MAX_CASCADES_PER_SPIN
         self.static_wild_values = STATIC_WILD_VALUES
         self.ascending_wild_values = ASCENDING_WILD_VALUES
         self.basegame_bar_rates = BASEGAME_BAR_RATES
         self.basegame_total_mult_cap = BASEGAME_TOTAL_MULT_CAP
         self.bonus_tiers = BONUS_TIERS
 
-        reels = {"BR0": "BR0.csv", "FR0": "FR0.csv", "ENH0": "ENH0.csv"}
+        reels = {"BR0": "BR0.csv", "FR0": "FR0.csv", "ENH0": "ENH0.csv", "FRWCAP": "FRWCAP.csv"}
         self.reels = {}
         for r, f in reels.items():
             self.reels[r] = self.read_reels_csv(os.path.join(self.reels_path, f))
@@ -174,7 +178,7 @@ class GameConfig(Config):
         wincap_cond = {
             "reel_weights": {
                 self.basegame_type: {base_reel_id: 1},
-                self.freegame_type: {"FR0": 1},
+                self.freegame_type: {"FR0": 1, "FRWCAP": 5},
             },
             "scatter_triggers": {6: 1},
             "forced_tier": "super_hidden",
@@ -331,7 +335,15 @@ class GameConfig(Config):
                 criteria="wincap",
                 quota=0.0185,
                 win_criteria=self.wincap,
-                conditions={**common, "force_wincap": True, "top_bar_override": wincap_override},
+                conditions={
+                    **common,
+                    "reel_weights": {
+                        self.basegame_type: {"BR0": 1},
+                        self.freegame_type: {"FR0": 1, "FRWCAP": 5},
+                    },
+                    "force_wincap": True,
+                    "top_bar_override": wincap_override,
+                },
             ),
             Distribution(
                 criteria="forced_super_hidden",

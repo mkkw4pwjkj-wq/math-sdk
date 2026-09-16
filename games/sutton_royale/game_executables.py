@@ -1,14 +1,34 @@
-"""Game specific executable functions - SPEC v3.
+"""Game specific executable functions - SPEC v4.
 
 Main grid: all-ways wins via the SDK's src.calculations.ways calculator, with
 `multiplier_strategy="global"` and `global_multiplier=1` so a wild substitutes
 as an ordinary 1-count match and never inflates the ways count itself.
 Ways doesn't tag winning positions for the tumble engine, so
-mark_exploding_ways_wins() does that - and specifically skips wild positions,
-since wilds don't clear mid-spin (see below).
+mark_exploding_ways_wins() does that - wild positions are excluded from
+*win-triggered* explosion (a wild doesn't clear just because it helped win),
+but they still clear on their own schedule - see age_wilds() below.
 
-The one multiplier system (SPEC v3 s7), now split across two wild types
-(a plain wild has neither a value nor any of the below):
+Root cause fixed this pass: a wild that never leaves the board and
+substitutes for anything guarantees a win on every subsequent tumble, so a
+cascade chain could only end when every wild happened to age out some other
+way - it couldn't, so chains ran to 90+ tumbles. Now every wild is only ever
+on the board for a bounded number of tumbles (config.max_wild_tumbles, 5):
+age_wilds() advances a per-reel counter each cascade and marks a wild's
+position to explode once its budget is spent, so it removes itself instead
+of sustaining the chain indefinitely. (Position within a reel doesn't matter
+for ways evaluation - SPEC s2 - so this tracks a remaining-tumbles budget per
+reel rather than literally relocating the symbol row by row; only the
+removal is mathematically relevant.) A hard cap on cascades per spin
+(config.max_cascades_per_spin, 15) exists independently as a backstop -
+CLAUDE.md called for one from the start and it was never wired in until now.
+
+For this pass, wilds are NOT sticky in features - every spin (base or free)
+drops fresh, ages, and clears within itself, the same as the base game. The
+prior sticky-across-spins behavior for features needs its own review once
+base is confirmed sane, per instruction.
+
+The one multiplier system (SPEC s7), split across two wild types (a plain
+wild has neither a value nor any of the below):
   * Static Wild - fixed multiplier value, drawn once on landing, never changes.
   * Ascending Wild - doubles its own value in place every time it participates
     in a winning tumble (apply_wild_doubling), no cap on the *number* of
@@ -16,11 +36,6 @@ The one multiplier system (SPEC v3 s7), now split across two wild types
   * At the end of a spin's whole cascade sequence, every Static + Ascending
     Wild value currently on screen sums and applies to that spin's win
     exactly once, capped per game-state (settle_wild_multiplier).
-  * In features, a landed wild locks to its reel (gamestate.locked_wilds) for
-    the rest of the feature, but its value resets to whatever it landed with
-    at the start of every subsequent spin - an Ascending Wild can still
-    double within that spin's own cascades, it just doesn't carry a
-    compounded value forward from one spin to the next.
 
 A Symbol's `.locked` slot (otherwise unused anywhere in the engine - grepped
 to confirm) is repurposed here as a plain boolean flag meaning "this wild is
@@ -56,13 +71,34 @@ class GameExecutables(GameCalculations):
             self.mark_exploding_ways_wins()
 
     def mark_exploding_ways_wins(self) -> None:
-        """Ways.get_ways_data doesn't flag positions for Tumble - flag them here,
-        except wilds: they persist on screen for the whole spin (SPEC v2 s7)."""
+        """Ways.get_ways_data doesn't flag positions for Tumble - flag them here.
+        Wilds are excluded: winning doesn't clear a wild, only aging out does
+        (age_wilds)."""
         for win in self.win_data["wins"]:
             for pos in win["positions"]:
                 sym = self.board[pos["reel"]][pos["row"]]
                 if not sym.check_attribute("wild"):
                     sym.explode = True
+
+    def age_wilds(self) -> None:
+        """Every wild gets config.max_wild_tumbles (5) tumbles on the board before
+        it removes itself - called once per cascade, right before tumble_game_board()
+        so an expired wild is cleared in that same pass alongside any win-triggered
+        explosions."""
+        expired = []
+        for reel, age in self.wild_ages.items():
+            new_age = age + 1
+            if new_age > self.config.max_wild_tumbles:
+                expired.append(reel)
+            else:
+                self.wild_ages[reel] = new_age
+        for reel in expired:
+            for row in range(self.config.num_rows[reel]):
+                sym = self.board[reel][row]
+                if sym.check_attribute("wild"):
+                    sym.explode = True
+                    break
+            del self.wild_ages[reel]
 
     def apply_wild_doubling(self) -> None:
         """Double every Ascending Wild that participated in this tumble's win(s), once each.
@@ -119,19 +155,13 @@ class GameExecutables(GameCalculations):
         params.update(override)
         return params
 
-    def apply_wild_drops(self, rates: dict, static_values: dict, ascending_values: dict, sticky: bool) -> None:
+    def apply_wild_drops(self, rates: dict, static_values: dict, ascending_values: dict) -> None:
         """Drop wilds onto the grid for this spin: one independent roll per reel,
-        skipping any reel already locked (a sticky feature wild keeps its reel
-        for the rest of the feature, but resets to its landed_value every spin -
-        SPEC v3 s7 - rather than carrying a doubled value forward)."""
+        every spin fresh (no cross-spin persistence this pass - see module
+        docstring). Each dropped wild starts a fresh age-out budget."""
+        self.wild_ages = {}
         drops = []
         for reel in range(self.config.num_reels):
-            if sticky and reel in self.locked_wilds:
-                locked = self.locked_wilds[reel]
-                self._place_wild(reel, locked["kind"], locked["landed_value"])
-                drops.append({"reel": reel, "kind": locked["kind"], "value": locked["landed_value"]})
-                continue
-
             kind = get_random_outcome(rates)
             if kind == "static":
                 value = get_random_outcome(static_values)
@@ -141,8 +171,7 @@ class GameExecutables(GameCalculations):
                 value = None
             if kind != "empty":
                 self._place_wild(reel, kind, value)
-                if sticky:
-                    self.locked_wilds[reel] = {"kind": kind, "landed_value": value}
+                self.wild_ages[reel] = 1
             drops.append({"reel": reel, "kind": kind, "value": value})
         wild_drop_event(self, drops)
 
@@ -164,20 +193,17 @@ class GameExecutables(GameCalculations):
         self.board[reel][row] = sym
 
     def apply_wild_drops_basegame(self) -> None:
-        """Base-game (single spin, non-feature) wild drop - fixed rates, never sticky."""
+        """Base-game (single spin, non-feature) wild drop - fixed rates."""
         self.apply_wild_drops(
             self.config.basegame_bar_rates,
             self.config.static_wild_values,
             self.config.ascending_wild_values,
-            sticky=False,
         )
 
     def apply_wild_drops_feature(self) -> None:
         """Free-spin wild drop using the active tier's (possibly overridden) rates/values."""
         params = self.bar_params
-        self.apply_wild_drops(
-            params["rates"], params["static_wild_values"], params["ascending_wild_values"], sticky=True
-        )
+        self.apply_wild_drops(params["rates"], params["static_wild_values"], params["ascending_wild_values"])
 
     def get_total_mult_cap(self) -> float:
         """Active tier's total-multiplier cap, or the base-game default when no tier is active."""
@@ -229,6 +255,7 @@ class GameExecutables(GameCalculations):
         update_freespin_event(self)
         self.win_manager.reset_spin_win()
         self.win_data = {}
+        self.cascade_count = 0
 
     def set_end_tumble_event(self) -> None:
         """After all cascades for this spin, settle the wild multiplier and emit win totals."""
