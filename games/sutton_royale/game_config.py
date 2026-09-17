@@ -93,6 +93,26 @@ and paytable structure are all untouched here too:
     labelling change (MAX_ROYALE_OVERRIDE hoisted out of _max_royale_mode so
     both can share it).
 
+v7: first pass driven by real (non-optimizer-shaped) simulation data, not a
+structural rewrite of the wild engine - fall rules, tumble logic and the
+paytable are all still untouched:
+  * Sutton Spins repriced 50x -> 60x and its odds table rebuilt against the
+    tier averages (SUTTON_SPINS_TIER_QUOTA) - bonus award rate rises 14.50%
+    -> 22.35%. Unlike every earlier pass it now also carves its own combined
+    "wincap" criteria out of all four tiers' quotas (_shared_wincap), instead
+    of having none at all.
+  * max_royale is retired; royale_mystery (900x) replaces it - a guaranteed
+    Super Hidden entry that upgrades to Max Royale on reveal at
+    ROYALE_MYSTERY_SPLIT (60%/40%), framed as an upgrade rather than a coin
+    flip (there is no losing branch). Internal per-flavour conditions are
+    reused unchanged from Hidden's own defaults and MAX_ROYALE_OVERRIDE.
+  * Two new guaranteed-entry modes, `bonus` (110x, Regular) and
+    `super_bonus` (280x, Super) - clones of the pre-v7 max_royale structure
+    (_guaranteed_tier_mode), pointed at cheaper tiers instead.
+  * mystery_enhancer is unchanged - it is the only mode a player can afford
+    repeatedly, and the menu would otherwise jump 1x -> 60x with nothing
+    between.
+
 See README.md for the engineering decisions made to turn SPEC.md's design
 language into precomputable game logic.
 """
@@ -173,17 +193,37 @@ TIER_AVG_PAYOUT = {"regular": 105, "super": 273, "super_hidden": 720}
 TIER_CAP_FREQ = {"regular": 250_000, "super": 40_000, "super_hidden": 5_000}
 MAX_ROYALE_CAP_FREQ = 150  # unconditional - every Max Royale spin is already super_hidden
 
-MAX_ROYALE_COST = 1000.0  # was 1,500x; internal economics (rates/caps) unchanged, pure price cut
-
 # mystery_enhancer: authored per-spin lottery replacing a boosted-scatter reel -
 # same pattern _sutton_spins_mode() already uses, just its own odds/cost.
 MYSTERY_ENHANCER_TIER_QUOTA = {"regular": 0.02374, "super": 0.00475, "super_hidden": 0.00119}
 MYSTERY_ENHANCER_COST = 5.0
 
-# v6: Max Royale folded into Sutton Spins as a fifth outcome (mechanically it
-# already was a tier - a guaranteed Hidden entry at its own enhanced
-# conditions - so this is mostly a labelling change).
-SUTTON_SPINS_TIER_QUOTA = {"regular": 0.0680, "super": 0.0360, "super_hidden": 0.0320, "max_royale": 0.0090}
+# v7: repriced 50x -> 60x and rebuilt against the tier averages below (SPEC.md
+# section 1). Bonus award rate rises 14.50% -> 22.35% (sum of these four).
+# Unlike earlier passes, this mode now also carves its own combined wincap
+# slice out of these quotas (see _shared_wincap) instead of having none.
+SUTTON_SPINS_TIER_QUOTA = {"regular": 0.1250, "super": 0.0600, "super_hidden": 0.0340, "max_royale": 0.0045}
+SUTTON_SPINS_COST = 60.0
+
+# Max Royale's own authored tier average (977x) - used both by Sutton Spins'
+# "max_royale" outcome and by royale_mystery's Max Royale flavour, since both
+# reuse MAX_ROYALE_OVERRIDE's identical enhanced conditions.
+MAX_ROYALE_AVG_PAYOUT = 977.0
+
+# v7: royale_mystery replaces max_royale (SPEC.md section 2) - a guaranteed
+# Super Hidden entry that upgrades to Max Royale on reveal at this split.
+# "Frame as an upgrade, not a coin flip" - there is no losing branch, so
+# these two shares are the mode's entire quota (they sum to 1.0).
+ROYALE_MYSTERY_SPLIT = {"max_royale": 0.60, "super_hidden": 0.40}
+ROYALE_MYSTERY_COST = 900.0
+
+# v7: bonus/super_bonus (SPEC.md sections 3-4) - guaranteed single-tier entry,
+# no "nothing" branch, cloned from the pre-v7 max_royale structure but pointed
+# at Regular/Super. No top_bar_override needed - forced_tier alone already
+# selects BONUS_TIERS[tier]'s own rates/caps (see
+# game_executables.resolve_bar_params).
+BONUS_COST = 110.0
+SUPER_BONUS_COST = 280.0
 
 # max_or_zero: a single tumble spin, one Bernoulli draw - the exact wincap or
 # exactly zero, nothing else. Modelled on Terminal Games' Max or Zero.
@@ -287,7 +327,9 @@ class GameConfig(Config):
             self._base_mode(),
             self._mystery_enhancer_mode(),
             self._sutton_spins_mode(),
-            self._max_royale_mode(),
+            self._bonus_mode(),
+            self._super_bonus_mode(),
+            self._royale_mystery_mode(),
             self._max_or_zero_mode(),
         ]
 
@@ -300,8 +342,14 @@ class GameConfig(Config):
         criteria (see _shared_wincap) - the cap is still reachable at the
         stated conditional frequency (1 in cap_freq, *given* the tier triggers
         at all), just forced through one consolidated branch rather than a
-        separate one per tier."""
-        scatter_count = {"regular": 4, "super": 5, "super_hidden": 6}[tier]
+        separate one per tier.
+
+        "max_royale" is a pseudo-tier (v6/v7): mechanically it's always a
+        Super Hidden entry (scatter_count 6, forced_tier "super_hidden") with
+        MAX_ROYALE_OVERRIDE's richer top bar layered on via extra_conditions -
+        reused by both _sutton_spins_mode and _royale_mystery_mode."""
+        scatter_count = {"regular": 4, "super": 5, "super_hidden": 6, "max_royale": 6}[tier]
+        forced_tier = "super_hidden" if tier == "max_royale" else tier
         wincap_quota = total_quota / cap_freq
         natural_quota = total_quota - wincap_quota
 
@@ -311,7 +359,7 @@ class GameConfig(Config):
                 self.freegame_type: {"FR0": 1},
             },
             "scatter_triggers": {scatter_count: 1},
-            "forced_tier": tier,
+            "forced_tier": forced_tier,
             "force_freegame": True,
             "force_wincap": False,
         }
@@ -426,47 +474,27 @@ class GameConfig(Config):
 
     def _sutton_spins_mode(self):
         """Single spin, authored tier mix (not derived from a boosted scatter
-        weight) - rebuilt against the new tier averages, same 50x cost. v6
-        folds Max Royale in as a fifth outcome: mechanically it's already a
-        tier (guaranteed Hidden entry at its own enhanced conditions -
-        MAX_ROYALE_OVERRIDE, shared with the standalone max_royale mode), so
-        this reuses that override directly rather than inventing new numbers."""
-        tier_scatters = {"regular": 4, "super": 5, "super_hidden": 6}
-        dists = []
-        for tier, scatter_count in tier_scatters.items():
-            dists.append(
-                Distribution(
-                    criteria=f"fs_{tier}",
-                    quota=SUTTON_SPINS_TIER_QUOTA[tier],
-                    conditions={
-                        "reel_weights": {
-                            self.basegame_type: {"BR0": 1},
-                            self.freegame_type: {"FR0": 1},
-                        },
-                        "scatter_triggers": {scatter_count: 1},
-                        "forced_tier": tier,
-                        "force_wincap": False,
-                        "force_freegame": True,
-                    },
-                )
-            )
+        weight) - rebuilt again for v7 (SPEC.md section 1): repriced 50x ->
+        60x, new quotas (SUTTON_SPINS_TIER_QUOTA), and - unlike every earlier
+        pass - its own combined "wincap" criteria carved out of all four
+        tiers' quotas via _tier_natural/_shared_wincap, the same consolidation
+        technique every other mode already uses (a separate wincap per tier
+        would collide - see _shared_wincap's docstring)."""
+        cap_freq = {**TIER_CAP_FREQ, "max_royale": MAX_ROYALE_CAP_FREQ}
+        dists = [
+            self._tier_natural(tier, "fs", SUTTON_SPINS_TIER_QUOTA[tier], cap_freq[tier])
+            for tier in ("regular", "super", "super_hidden")
+        ]
         dists.append(
-            Distribution(
-                criteria="fs_max_royale",
-                quota=SUTTON_SPINS_TIER_QUOTA["max_royale"],
-                conditions={
-                    "reel_weights": {
-                        self.basegame_type: {"BR0": 1},
-                        self.freegame_type: {"FR0": 1},
-                    },
-                    "scatter_triggers": {6: 1},
-                    "forced_tier": "super_hidden",
-                    "force_wincap": False,
-                    "force_freegame": True,
-                    "top_bar_override": MAX_ROYALE_OVERRIDE,
-                },
+            self._tier_natural(
+                "max_royale",
+                "fs",
+                SUTTON_SPINS_TIER_QUOTA["max_royale"],
+                cap_freq["max_royale"],
+                extra_conditions={"top_bar_override": MAX_ROYALE_OVERRIDE},
             )
         )
+        dists.append(self._shared_wincap(SUTTON_SPINS_TIER_QUOTA, cap_freq))
         dists.append(
             Distribution(
                 criteria="nothing",
@@ -480,7 +508,7 @@ class GameConfig(Config):
         )
         return BetMode(
             name="sutton_spins",
-            cost=50.0,
+            cost=SUTTON_SPINS_COST,
             rtp=self.rtp,
             max_win=self.wincap,
             auto_close_disabled=False,
@@ -488,6 +516,76 @@ class GameConfig(Config):
             is_buybonus=True,
             distributions=dists,
         )
+
+    def _royale_mystery_mode(self):
+        """v7, SPEC.md section 2: replaces max_royale. Guaranteed Super Hidden
+        entry, upgrading to Max Royale on reveal at ROYALE_MYSTERY_SPLIT
+        (60%/40%) - "an upgrade, not a coin flip": there is no losing branch,
+        so the two shares are this mode's entire quota. Internal conditions
+        per flavour are untouched - reused directly from Hidden's own
+        defaults and MAX_ROYALE_OVERRIDE - nothing new to derive there.
+
+        Both flavours are Super Hidden entries under the hood (Max Royale is
+        just Super Hidden + a richer top bar) and both converge on the
+        identical 50,000x wincap value, so - exactly as _shared_wincap's
+        docstring describes, and exactly the failure that cost per-tier cap
+        attribution last pass - they share one "wincap" criteria rather than
+        two."""
+        cap_freq = {"max_royale": MAX_ROYALE_CAP_FREQ, "super_hidden": TIER_CAP_FREQ["super_hidden"]}
+        dists = [
+            self._tier_natural(
+                "max_royale",
+                "fs",
+                ROYALE_MYSTERY_SPLIT["max_royale"],
+                cap_freq["max_royale"],
+                extra_conditions={"top_bar_override": MAX_ROYALE_OVERRIDE},
+            ),
+            self._tier_natural(
+                "super_hidden", "fs", ROYALE_MYSTERY_SPLIT["super_hidden"], cap_freq["super_hidden"]
+            ),
+        ]
+        dists.append(self._shared_wincap(ROYALE_MYSTERY_SPLIT, cap_freq))
+        return BetMode(
+            name="royale_mystery",
+            cost=ROYALE_MYSTERY_COST,
+            rtp=self.rtp,
+            max_win=self.wincap,
+            auto_close_disabled=False,
+            is_feature=False,
+            is_buybonus=True,
+            distributions=dists,
+        )
+
+    def _guaranteed_tier_mode(self, name, cost, tier, cap_freq):
+        """v7, SPEC.md sections 3-4: bonus/super_bonus - guaranteed single-tier
+        entry, no "nothing" branch. Clone of the pre-v7 max_royale structure
+        (one natural branch + one shared-technique wincap slice), pointed at
+        whichever tier this mode buys directly into. No top_bar_override
+        needed here - forced_tier alone already selects BONUS_TIERS[tier]'s
+        own rates/caps (game_executables.resolve_bar_params merges tier
+        defaults first, an override second)."""
+        dists = [
+            self._tier_natural(tier, "fs", 1.0, cap_freq),
+            self._shared_wincap({tier: 1.0}, {tier: cap_freq}),
+        ]
+        return BetMode(
+            name=name,
+            cost=cost,
+            rtp=self.rtp,
+            max_win=self.wincap,
+            auto_close_disabled=False,
+            is_feature=False,
+            is_buybonus=True,
+            distributions=dists,
+        )
+
+    def _bonus_mode(self):
+        """Guaranteed Regular entry, 110x (BONUS_COST)."""
+        return self._guaranteed_tier_mode("bonus", BONUS_COST, "regular", TIER_CAP_FREQ["regular"])
+
+    def _super_bonus_mode(self):
+        """Guaranteed Super entry, 280x (SUPER_BONUS_COST)."""
+        return self._guaranteed_tier_mode("super_bonus", SUPER_BONUS_COST, "super", TIER_CAP_FREQ["super"])
 
     def _max_or_zero_mode(self):
         """One Bernoulli draw, no distribution to fit - either the exact
@@ -550,63 +648,6 @@ class GameConfig(Config):
         return BetMode(
             name="max_or_zero",
             cost=MAX_OR_ZERO_COST,
-            rtp=self.rtp,
-            max_win=self.wincap,
-            auto_close_disabled=False,
-            is_feature=False,
-            is_buybonus=True,
-            distributions=dists,
-        )
-
-    def _max_royale_mode(self):
-        """Guaranteed Super Hidden entry: 15 spins (Super Hidden's own default - no
-        override needed), its own top-bar fill rates (MAX_ROYALE_OVERRIDE,
-        shared with Sutton Spins' own "Max Royale" outcome - v6), total
-        multiplier capped at 840x. Cost dropped 1,500x -> 1,000x (v5,
-        MAX_ROYALE_COST) - a pure price cut, no change to the internal
-        rates/caps above. The cap is reachable at 1 in MAX_ROYALE_CAP_FREQ,
-        unconditional (every spin here is already super_hidden)."""
-        common = {
-            "reel_weights": {
-                self.basegame_type: {"BR0": 1},
-                self.freegame_type: {"FR0": 1},
-            },
-            "scatter_triggers": {6: 1},
-            "forced_tier": "super_hidden",
-            "force_freegame": True,
-        }
-        wincap_override = dict(MAX_ROYALE_OVERRIDE)
-        wincap_override.update(
-            {
-                "rates": {"empty": 0.0, "plain": 0.0, "static": 0.0, "ascending": 1.0},
-                "ascending_wild_values": {5: 1.0},
-            }
-        )
-        wincap_quota = 1.0 / MAX_ROYALE_CAP_FREQ
-        dists = [
-            Distribution(
-                criteria="wincap",
-                quota=wincap_quota,
-                win_criteria=self.wincap,
-                conditions={
-                    **common,
-                    "reel_weights": {
-                        self.basegame_type: {"BR0": 1},
-                        self.freegame_type: {"FR0": 1, "FRWCAP": 5},
-                    },
-                    "force_wincap": True,
-                    "top_bar_override": wincap_override,
-                },
-            ),
-            Distribution(
-                criteria="forced_super_hidden",
-                quota=1.0 - wincap_quota,
-                conditions={**common, "force_wincap": False, "top_bar_override": MAX_ROYALE_OVERRIDE},
-            ),
-        ]
-        return BetMode(
-            name="max_royale",
-            cost=MAX_ROYALE_COST,
             rtp=self.rtp,
             max_win=self.wincap,
             auto_close_disabled=False,

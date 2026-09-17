@@ -34,6 +34,20 @@ _shared_wincap consolidate each mode's per-tier wincap slices into one
 "wincap" criteria (quota = their sum) that always forces through Hidden's own
 conditions; this file's `_tier_rtp_split` mirrors that same consolidation on
 the RTP side.
+
+v7: Sutton Spins repriced 50x -> 60x, rebuilt against new tier quotas, and now
+carves its own combined wincap rtp share out of the tier contributions (via
+_tier_rtp_split) instead of having none. max_royale is retired; royale_mystery
+(900x) replaces it - two flavours (Max Royale / Super Hidden) sharing one
+wincap criteria, same consolidation as everywhere else. Two new
+guaranteed-entry modes, bonus (110x, Regular) and super_bonus (280x, Super) -
+each mode's wincap rtp is exact and deterministic here (quota * wincap / cost,
+both already fixed by game_config.py), not an approximation, since there's
+only ever one tier's own average involved; only Sutton Spins' four-tier and
+royale_mystery's two-tier splits still use the div-by-cap_freq approximation
+_tier_rtp_split established last pass - the individual per-criteria rtp given
+to the optimizer is search guidance, not a hard per-criteria constraint;
+verify_optimization_input only asserts the *sum* across a mode's criteria.
 """
 
 from optimization_program.optimization_config import (
@@ -50,16 +64,24 @@ from game_config import (
     MYSTERY_ENHANCER_TIER_QUOTA,
     MYSTERY_ENHANCER_COST,
     SUTTON_SPINS_TIER_QUOTA,
+    SUTTON_SPINS_COST,
     MAX_ROYALE_CAP_FREQ,
+    MAX_ROYALE_AVG_PAYOUT,
+    ROYALE_MYSTERY_SPLIT,
+    ROYALE_MYSTERY_COST,
+    BONUS_COST,
+    SUPER_BONUS_COST,
     MAX_OR_ZERO_WIN_QUOTA,
 )
 
 
-def _tier_rtp_split(tier, total_rtp):
+def _tier_rtp_split(tier, total_rtp, cap_freq=None):
     """Split a tier's total RTP contribution into its own (fs_<tier>, share of
     the mode's one shared "wincap" criteria), in proportion to how
     game_config._tier_natural carves each tier's slice out of its quota."""
-    wincap_share = total_rtp / TIER_CAP_FREQ[tier]
+    if cap_freq is None:
+        cap_freq = TIER_CAP_FREQ[tier]
+    wincap_share = total_rtp / cap_freq
     return total_rtp - wincap_share, wincap_share
 
 DEFAULT_PARAMETERS = ConstructParameters(
@@ -125,47 +147,98 @@ class OptimizationSetup:
             rtp=round(enh_wincap_rtp, 8), av_win=game_config.wincap, search_conditions=game_config.wincap
         ).return_dict()
 
-        # Sutton Spins: authored tier mix, no separate wincap branch (unchanged
-        # structurally from earlier passes). v6 folds Max Royale in as a
-        # fifth outcome, targeting the same average payout as the standalone
-        # max_royale mode's own budget (its enhanced conditions are shared,
-        # via MAX_ROYALE_OVERRIDE, so its natural average should land near
-        # the same place). Same cost-normalization as mystery_enhancer above -
-        # every raw-x contribution divided by Sutton Spins' own 50x cost.
-        sutton_cost = 50.0
+        # Sutton Spins (v7): authored tier mix at the new 60x-cost quotas, now
+        # with its own combined wincap rtp share (previously none) carved out
+        # via _tier_rtp_split - same consolidation technique as base/
+        # mystery_enhancer above. Max Royale's own tier average
+        # (MAX_ROYALE_AVG_PAYOUT) is shared with royale_mystery below rather
+        # than re-derived from a mode-specific cost.
         sutton_tier_rtp = {
-            tier: TIER_AVG_PAYOUT[tier] * SUTTON_SPINS_TIER_QUOTA[tier] / sutton_cost for tier in TIER_AVG_PAYOUT
+            tier: TIER_AVG_PAYOUT[tier] * SUTTON_SPINS_TIER_QUOTA[tier] / SUTTON_SPINS_COST
+            for tier in TIER_AVG_PAYOUT
         }
-        max_royale_avg_target = game_config.rtp * 1000  # matches max_royale mode's own 1,000x-cost budget
-        max_royale_rtp = SUTTON_SPINS_TIER_QUOTA["max_royale"] * max_royale_avg_target / sutton_cost
-        sutton_residual = round(game_config.rtp - sum(sutton_tier_rtp.values()) - max_royale_rtp, 5)
+        max_royale_rtp = MAX_ROYALE_AVG_PAYOUT * SUTTON_SPINS_TIER_QUOTA["max_royale"] / SUTTON_SPINS_COST
+        sutton_residual = round(
+            game_config.rtp - sum(sutton_tier_rtp.values()) - max_royale_rtp, 6
+        )
+
         sutton_conditions = {
             "nothing": ConstructConditions(rtp=0.0, av_win=0.0, search_conditions=0.0).return_dict(),
-            "fs_regular": ConstructConditions(
-                rtp=sutton_tier_rtp["regular"] + sutton_residual, hr=round(1 / SUTTON_SPINS_TIER_QUOTA["regular"], 1)
-            ).return_dict(),
-            "fs_super": ConstructConditions(
-                rtp=sutton_tier_rtp["super"], hr=round(1 / SUTTON_SPINS_TIER_QUOTA["super"], 1)
+        }
+        sutton_wincap_rtp = 0.0
+        fs_rtp, wc_rtp = _tier_rtp_split("regular", sutton_tier_rtp["regular"])
+        sutton_conditions["fs_regular"] = ConstructConditions(
+            rtp=round(fs_rtp + sutton_residual, 6), hr=round(1 / SUTTON_SPINS_TIER_QUOTA["regular"], 1)
+        ).return_dict()
+        sutton_wincap_rtp += wc_rtp
+        for tier in ("super", "super_hidden"):
+            fs_rtp, wc_rtp = _tier_rtp_split(tier, sutton_tier_rtp[tier])
+            sutton_conditions[f"fs_{tier}"] = ConstructConditions(
+                rtp=round(fs_rtp, 6), hr=round(1 / SUTTON_SPINS_TIER_QUOTA[tier], 1)
+            ).return_dict()
+            sutton_wincap_rtp += wc_rtp
+        fs_rtp, wc_rtp = _tier_rtp_split("max_royale", max_royale_rtp, cap_freq=MAX_ROYALE_CAP_FREQ)
+        sutton_conditions["fs_max_royale"] = ConstructConditions(
+            rtp=round(fs_rtp, 6), hr=round(1 / SUTTON_SPINS_TIER_QUOTA["max_royale"], 1)
+        ).return_dict()
+        sutton_wincap_rtp += wc_rtp
+        sutton_conditions["wincap"] = ConstructConditions(
+            rtp=round(sutton_wincap_rtp, 8), av_win=game_config.wincap, search_conditions=game_config.wincap
+        ).return_dict()
+
+        # royale_mystery (v7, replaces max_royale): guaranteed Super Hidden
+        # entry upgrading to Max Royale at ROYALE_MYSTERY_SPLIT (60%/40%) - no
+        # losing branch, so the split is the mode's entire quota. Unlike
+        # Sutton Spins' multi-tier split above, both this mode's wincap share
+        # and its two flavours' own rtp are exact/deterministic, not
+        # approximations - each flavour's quota, cap_freq and cost are all
+        # already fixed by game_config.py, so there's only one way to derive
+        # them. The two flavours split the remaining (non-wincap) budget in
+        # the same ratio as their own cap-hit-inclusive tier averages (977x
+        # Max Royale vs 720x Super Hidden, at the 60/40 mix).
+        rm_cap_freq = {"max_royale": MAX_ROYALE_CAP_FREQ, "super_hidden": TIER_CAP_FREQ["super_hidden"]}
+        rm_wincap_quota = sum(ROYALE_MYSTERY_SPLIT[t] / rm_cap_freq[t] for t in ROYALE_MYSTERY_SPLIT)
+        rm_wincap_rtp = round(rm_wincap_quota * game_config.wincap / ROYALE_MYSTERY_COST, 6)
+        rm_remaining_rtp = round(game_config.rtp - rm_wincap_rtp, 6)
+        rm_naive = {
+            "max_royale": ROYALE_MYSTERY_SPLIT["max_royale"] * MAX_ROYALE_AVG_PAYOUT,
+            "super_hidden": ROYALE_MYSTERY_SPLIT["super_hidden"] * TIER_AVG_PAYOUT["super_hidden"],
+        }
+        rm_naive_total = sum(rm_naive.values())
+        rm_max_royale_rtp = round(rm_remaining_rtp * rm_naive["max_royale"] / rm_naive_total, 6)
+        royale_mystery_conditions = {
+            "fs_max_royale": ConstructConditions(
+                rtp=rm_max_royale_rtp, hr=round(1 / ROYALE_MYSTERY_SPLIT["max_royale"], 1)
             ).return_dict(),
             "fs_super_hidden": ConstructConditions(
-                rtp=sutton_tier_rtp["super_hidden"], hr=round(1 / SUTTON_SPINS_TIER_QUOTA["super_hidden"], 1)
+                rtp=round(rm_remaining_rtp - rm_max_royale_rtp, 6),
+                hr=round(1 / ROYALE_MYSTERY_SPLIT["super_hidden"], 1),
             ).return_dict(),
-            "fs_max_royale": ConstructConditions(
-                rtp=round(max_royale_rtp, 5), hr=round(1 / SUTTON_SPINS_TIER_QUOTA["max_royale"], 1)
+            "wincap": ConstructConditions(
+                rtp=rm_wincap_rtp, av_win=game_config.wincap, search_conditions=game_config.wincap
             ).return_dict(),
         }
 
-        # Max Royale: every spin is already super_hidden; the cap is reachable
-        # at 1 in MAX_ROYALE_CAP_FREQ, unconditional.
-        wincap_quota = 1 / MAX_ROYALE_CAP_FREQ
-        max_royale_conditions = {
-            "forced_super_hidden": ConstructConditions(
-                rtp=round(game_config.rtp * (1 - wincap_quota), 5), hr=1.0
-            ).return_dict(),
+        # bonus/super_bonus (v7, new): guaranteed single-tier entry, no
+        # "nothing" branch - exact/deterministic wincap rtp (only one tier's
+        # average involved, same reasoning as royale_mystery above).
+        bonus_wincap_quota = 1.0 / TIER_CAP_FREQ["regular"]
+        bonus_wincap_rtp = round(bonus_wincap_quota * game_config.wincap / BONUS_COST, 6)
+        bonus_conditions = {
             "wincap": ConstructConditions(
-                rtp=round(game_config.rtp * wincap_quota, 5),
-                av_win=game_config.wincap,
-                search_conditions=game_config.wincap,
+                rtp=bonus_wincap_rtp, av_win=game_config.wincap, search_conditions=game_config.wincap
+            ).return_dict(),
+            "fs_regular": ConstructConditions(rtp=round(game_config.rtp - bonus_wincap_rtp, 6), hr=1.0).return_dict(),
+        }
+
+        super_bonus_wincap_quota = 1.0 / TIER_CAP_FREQ["super"]
+        super_bonus_wincap_rtp = round(super_bonus_wincap_quota * game_config.wincap / SUPER_BONUS_COST, 6)
+        super_bonus_conditions = {
+            "wincap": ConstructConditions(
+                rtp=super_bonus_wincap_rtp, av_win=game_config.wincap, search_conditions=game_config.wincap
+            ).return_dict(),
+            "fs_super": ConstructConditions(
+                rtp=round(game_config.rtp - super_bonus_wincap_rtp, 6), hr=1.0
             ).return_dict(),
         }
 
@@ -206,21 +279,44 @@ class OptimizationSetup:
             "sutton_spins": {
                 "conditions": sutton_conditions,
                 "scaling": ConstructScaling(
-                    [{"criteria": "fs_super_hidden", "scale_factor": 1.0, "win_range": (200, 2000), "probability": 1.0}]
+                    [
+                        {"criteria": "fs_super_hidden", "scale_factor": 1.0, "win_range": (200, 2000), "probability": 1.0},
+                        {"criteria": "fs_max_royale", "scale_factor": 1.0, "win_range": (400, 8000), "probability": 1.0},
+                    ]
                 ).return_dict(),
                 "parameters": DEFAULT_PARAMETERS,
                 "distribution_bias": ConstructFenceBias(
                     applied_criteria=["fs_super_hidden"], bias_ranges=[(150.0, 400.0)], bias_weights=[0.3]
                 ).return_dict(),
             },
-            "max_royale": {
-                "conditions": max_royale_conditions,
+            "bonus": {
+                "conditions": bonus_conditions,
                 "scaling": ConstructScaling(
-                    [{"criteria": "forced_super_hidden", "scale_factor": 1.0, "win_range": (400, 8000), "probability": 1.0}]
+                    [{"criteria": "fs_regular", "scale_factor": 1.1, "win_range": (50, 220), "probability": 1.0}]
                 ).return_dict(),
                 "parameters": DEFAULT_PARAMETERS,
                 "distribution_bias": ConstructFenceBias(
-                    applied_criteria=["forced_super_hidden"], bias_ranges=[(400.0, 3000.0)], bias_weights=[0.5]
+                    applied_criteria=["fs_regular"], bias_ranges=[(100.0, 250.0)], bias_weights=[0.4]
+                ).return_dict(),
+            },
+            "super_bonus": {
+                "conditions": super_bonus_conditions,
+                "scaling": ConstructScaling(
+                    [{"criteria": "fs_super", "scale_factor": 1.0, "win_range": (150, 500), "probability": 1.0}]
+                ).return_dict(),
+                "parameters": DEFAULT_PARAMETERS,
+                "distribution_bias": ConstructFenceBias(
+                    applied_criteria=["fs_super"], bias_ranges=[(150.0, 400.0)], bias_weights=[0.4]
+                ).return_dict(),
+            },
+            "royale_mystery": {
+                "conditions": royale_mystery_conditions,
+                "scaling": ConstructScaling(
+                    [{"criteria": "fs_max_royale", "scale_factor": 1.0, "win_range": (400, 8000), "probability": 1.0}]
+                ).return_dict(),
+                "parameters": DEFAULT_PARAMETERS,
+                "distribution_bias": ConstructFenceBias(
+                    applied_criteria=["fs_max_royale"], bias_ranges=[(400.0, 3000.0)], bias_weights=[0.5]
                 ).return_dict(),
             },
             "max_or_zero": {

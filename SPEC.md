@@ -1,4 +1,4 @@
-# Sutton Royale — Math Specification v3 (+ v4/v5/v6 amendments)
+# Sutton Royale — Math Specification v3 (+ v4/v5/v6/v7 amendments)
 
 Amends v2 in place: §3/§4/§6/§7 updated below, everything else unchanged.
 See §16 for the v2→v3 delta (§15 covers v1→v2), §17 for v3→v5 (wild
@@ -21,7 +21,7 @@ Target platform: Stake Engine (math-sdk + frontend-sdk)
 | Max win | 50,000× — hard cap, terminates the round (v6 - was 20,000×) |
 | Volatility | Very high |
 | Base hit frequency | ~25% target |
-| Bet modes | 5 |
+| Bet modes | 7 (v7 - was 5; see §10) |
 
 ## 2. Win system
 
@@ -253,26 +253,30 @@ without distorting the reel weights.
 
 ## 10. Bet modes
 
-Five (v6 adds `max_or_zero` - see below).
+Seven (v7 adds `bonus`, `super_bonus`, `royale_mystery`; retires `max_royale`
+- see below).
 
 ```
 mode                 cost     notes
 base                   1x     full game, all tiers reachable
 mystery_enhancer       5x     authored per-spin lottery (v5 - replaces the boosted-reel "enhancer")
-sutton_spins          50x     single spin, authored tier mix, Max Royale folded in as a tier (v6)
-max_royale         1,000x     forced 6-scatter entry, 15 spins, max conditions (v5 - was 1,500x)
+sutton_spins          60x     single spin, authored tier mix + own wincap (v7 - was 50x)
+bonus                110x     guaranteed Regular entry (v7, new)
+super_bonus          280x     guaranteed Super entry (v7, new)
+royale_mystery       900x     guaranteed Hidden entry, upgrades to Max Royale at 60/40 (v7 - replaces max_royale)
 max_or_zero        2,000x     one Bernoulli draw - the wincap or zero, nothing else (v6)
 ```
 
 Every mode must satisfy `cost × 0.977 = average payout`.
 
-Standard Bonus (225×) and Super Bonus (525×) buys are deliberately omitted.
-Hel's Domain — the closest published comparator — ships without them. At very
-high volatility the mid-priced buy gets squeezed out. Consider for v2, not now.
-(A later planning note named these "bonus" (110x) and "super_bonus" (280x) as
-part of a six-mode menu, but gave no odds/tier mix - not built. If they're
-wanted, they need their own economics specified the way every other mode
-above has.)
+A Standard Bonus (225×) / Super Bonus (525×) pair was considered and
+dropped early on - Hel's Domain, the closest published comparator, ships
+without them, and at very high volatility a mid-priced buy gets squeezed
+out. A later planning note revisited the idea under the same names but
+different prices (110x/280x) and no odds, leaving two unreconciled figures
+for the same nominally-dropped idea sitting in this document at once - a
+contradiction, not two valid options. v7 resolves it: `bonus`/`super_bonus`
+are built at the 110x/280x figures, with the odds and tier mix given below.
 
 ### mystery_enhancer — authored lottery (v5, replaces the boosted-reel enhancer)
 
@@ -301,38 +305,99 @@ the price.
 ### Sutton Spins — authored distribution
 
 Because outcomes are precomputed, this mode's tier mix is written directly
-rather than derived from a boosted scatter weight. v6 rebuilds it again, this
-time with Max Royale folded in as a fifth outcome - mechanically it already
-was a tier (a guaranteed Hidden entry at its own enhanced conditions), so this
-is mostly a labelling change, reusing Max Royale's own conditions rather than
-inventing new numbers:
+rather than derived from a boosted scatter weight. v7 reprices 50x → 60x and
+rebuilds the table against the tier averages again - this time also carving
+the mode's own combined wincap slice out of the four tiers' contributions
+(it had none before this pass, a gap rather than a design choice - the
+per-tier cap was reachable in every other mode but this one):
 
 ```
-outcome        chance     odds      contribution
-Max Royale      0.90%   1 in 111       8.8x
-Super Hidden    3.20%   1 in  31      23.0x
-Super           3.60%   1 in  28       9.8x
-Regular         6.80%   1 in  15       7.1x
-nothing        85.50%      -             -
-                                     -----
-                                      48.7x
+outcome         chance     odds      contribution
+Max Royale       0.45%   1 in 222        4.40x
+Super Hidden     3.40%   1 in  29       24.48x
+Super            6.00%   1 in  17       16.38x
+Regular         12.50%   1 in   8       13.13x
+nothing         77.65%      -              -
+                                       ------
+                                        58.38x
 ```
 
-Budget is 50 × 0.977 = 48.85×.
+Budget is (60 × 0.977) − 0.241 = 58.379× (0.241 is base's own paytable-only
+contribution, present here too since every spin resolves a normal reveal
+regardless of the lottery - see mystery_enhancer above). Bonus award rate
+rises 14.50% → 22.35%. Combined wincap frequency 1 in 25,773
+(0.1250/250,000 + 0.0600/40,000 + 0.0340/5,000 + 0.0045/150) - carved from
+the four tiers' own contributions above, not added on top, and forced
+through one shared "wincap" criteria (same consolidation as base/
+mystery_enhancer, §8/§18) rather than four separate same-value branches
+that would collide in the optimizer's fence-matcher.
 
-### Max Royale
+### bonus (v7, new)
 
-Guaranteed Super Hidden entry. 15 spins, 42% wild rate, minimum landed
-multiplier 5×, total multiplier cap 840x (§7.4, v6 - was 420x).
+Guaranteed Regular entry, no losing branch - a clone of the pre-v7 Max
+Royale structure (below), pointed at the cheapest tier instead. Same crate
+floors, top-bar rates, and total multiplier cap (240x) as a natural Regular
+trigger (§6/§8's regular row) - nothing new to derive.
 
-Cost dropped 1,500x → 1,000x in v5 - a pure price cut, no change to the
-internal rates/caps. Budget 1,000 × 0.977 = 977×. Target 1 in 150 reaching the
-cap (§8, v6 - was 1 in 80 at the 20,000× cap) - unconditional, since every
-spin here is already Hidden.
+Budget: 110 × 0.977 = 107.47×, against Regular's own 105x tier average - the
+mode needs to run about 2.3% richer than a natural trigger; set as the
+target and let the optimizer converge to it, not hand-tuned. RTP targets:
+wincap 1 in 250,000 (0.001818) / freegame (0.975182) / sum 0.977.
 
-**This mode saturated at cap on 100% of sims twice during v1.** Both times the
-cause was an uncapped accumulating multiplier. Verify a spread of payouts here
-before trusting any other number.
+### super_bonus (v7, new)
+
+Same pattern, guaranteed Super entry, total multiplier cap 380x (§6/§8's
+super row). Budget: 280 × 0.977 = 273.56×, against Super's own 273x average
+- near-exact as priced. RTP targets: wincap 1 in 40,000 (0.004464) /
+freegame (0.972536) / sum 0.977.
+
+### royale_mystery (v7, replaces Max Royale)
+
+Guaranteed Super Hidden entry, upgrading to Max Royale on reveal at a
+60%/40% split. Framed as an upgrade, not a coin flip - there is no losing
+outcome here, the floor is always the 720x Super Hidden tier:
+
+```
+outcome         chance    avg      contribution
+Max Royale      60.0%    977x        586.20x
+Super Hidden    40.0%    720x        288.00x
+                                    -------
+                                     874.20x
+```
+
+Budget: 900 × 0.977 = 879.30× - the table above (874.20x) runs 5.10x
+(0.58%) short, inside optimizer tolerance. 900x, not 800x: the 60/40 split
+is far richer than the ~24% Max Royale share an 800x price would support:
+at 800x this mix returns 109%.
+
+Both flavours are Super Hidden entries under the hood (Max Royale is Super
+Hidden plus a richer top bar, §6) and both converge on the identical
+50,000x wincap value, so - exactly like base/mystery_enhancer/Sutton Spins
+above - they share **one** wincap fence (combined rate 1 in 245, from
+0.60/150 + 0.40/5,000) rather than two forced branches that would collide
+in the optimizer's fence-matcher (§18). Internal per-flavour conditions
+(top-bar rates, crate floors, 840x total multiplier cap) are untouched -
+reused directly from Super Hidden's own defaults and Max Royale's, nothing
+new to derive there.
+
+**This mode's predecessor (Max Royale) saturated at cap on 100% of sims
+twice during v1.** Both times the cause was an uncapped accumulating
+multiplier. Verify a spread of payouts here before trusting any other
+number.
+
+**Cannibalisation check** (informational - a cheaper generalist mode should
+never out-price a dedicated one into irrelevance):
+
+```
+tier      via Sutton Spins    dedicated    ratio
+Regular      60/0.1250=480x       110x       4.4x
+Super        60/0.0600=1,000x     280x       3.6x
+Hidden+      60/0.0385=1,558x     900x       1.7x
+```
+
+All comfortably ahead of 1:1. Hidden's 1.7x margin is the thinnest of the
+three - worth watching if royale_mystery underperforms, not adjusted this
+pass.
 
 ### max_or_zero (v6)
 
@@ -370,9 +435,26 @@ detail, not an open question**: player-facing the outcome is exactly binary
 what the spec actually requires; the internal route there is a short-lived
 forced feature entry rather than a literal single reveal.
 
+**Animation contract (v7).** The outcome above is resolved by the math layer
+before animation begins - the frontend is never deciding win or loss, only
+dramatizing an already-known result. The crate descends one row at a time
+with a discrete pause per row, five beats; a win reaches row 5. On a loss the
+stopping row must be drawn uniformly at random from rows 1-4 - never weighted
+toward row 4 (or any row) to simulate a "near miss". Weighting the stop
+distribution toward the top of the ladder is engineered near-miss behaviour,
+a regulatory problem in most licensed markets, not a tuning choice available
+to this game. A skip/accelerate control is required so a player who has seen
+the animation before can shorten the five beats without changing the
+already-resolved outcome.
+
 ## 11. RTP allocation
 
-v5 figures (see §17 for what changed and why):
+v5 figures (see §17 for what changed and why). This table covers **base
+mode's own** allocation only - sutton_spins/bonus/super_bonus/royale_mystery
+price the same tiers independently (§10) and are not part of this split.
+Each row is independently rounded to 2 decimals, so the column sums to
+97.80% against the true 97.70% target - a rounding artifact, not a real
+0.10-point gap (audit finding, v7):
 
 ```
 component            RTP      odds          avg payout
@@ -381,7 +463,7 @@ regular bonus      49.80%   1 in 211          105x
 super bonus        17.90%   1 in 1,529        273x
 super hidden        6.00%   1 in 12,107       720x
                    ------
-                   97.80%
+                   97.80%  (rounding artifact - see note above)
 ```
 
 Superseded table (pre-v5, kept for reference only):
@@ -409,6 +491,9 @@ chance of a bonus within 500 spins  93.5%
 RTP in base game                    24.1%
 RTP in features                     73.7%
 ```
+
+(24.1% + 73.7% = 97.8% - the same independent-rounding artifact as §11's
+table, not a real gap against the 97.70% target.)
 
 ## 13. Hard constraints
 
@@ -590,3 +675,45 @@ Unchanged: the paytable (§4), wild fall rules and the 15-cascade cap (§7.5-6),
 top-bar fill rates (§6), tier trigger odds and target average payouts (§8),
 mystery_enhancer's and Sutton Spins' own tier quotas apart from the addition
 above, Max Royale's cost and internal rates.
+
+## 19. What changed in v7
+
+First pass driven by real (non-optimizer-shaped) simulation data rather than
+a structural rewrite - wild fall rules (§7.5-6), tumble logic, and the
+paytable (§4) are all untouched here too. See §1, §10-11 for the current
+numbers this section summarizes.
+
+- **Sutton Spins repriced 50x → 60x** and its odds table rebuilt against the
+  tier averages (§10) - bonus award rate rises 14.50% → 22.35%. Unlike every
+  earlier pass it now also carves its own combined "wincap" criteria out of
+  all four tiers' quotas (§18's fence-collision fix, generalized to a
+  fourth "max_royale" pseudo-tier) - it had none at all before this pass, a
+  gap rather than a design choice.
+- **max_royale retired; royale_mystery (900x) replaces it** (§10) - a
+  guaranteed Super Hidden entry upgrading to Max Royale on reveal at a
+  60%/40% split, framed as an upgrade rather than a coin flip (no losing
+  branch). Internal per-flavour conditions are reused unchanged from Super
+  Hidden's own defaults and Max Royale's own top-bar override - nothing new
+  to derive there, and (per §18's already-established rule) both flavours
+  share one wincap fence rather than two.
+- **Two new modes, `bonus` (110x) and `super_bonus` (280x)** (§10) - the
+  six-mode-menu idea a pre-v6 planning note raised without odds (§18), now
+  built and reconciled against the 225x/525x figure it contradicted:
+  clones of the pre-v7 Max Royale structure, pointed at the Regular/Super
+  tiers instead of Hidden.
+- **mystery_enhancer unchanged.** Removal was considered and rejected: it's
+  the only mode a player can afford repeatedly, and without it the menu
+  jumps 1x → 60x with nothing between - every comparator ships a cheap ante.
+- **Max or Zero animation contract added** (§10) - the crate's descent is
+  now specified frame-by-frame (5 beats, uniform 1-4 loss stop row, skip
+  control), closing a gap where the math layer's binary outcome had no
+  matching presentation spec.
+- **SPEC.md coherence audit** (this pass, not a structural change): fixed
+  the title's stale version tag, the §10 bonus/super_bonus price
+  contradiction above, the §11/§12 RTP tables' rounding-sum artifact (rows
+  independently rounded, displaying 97.80% against a 97.70% target), and
+  §1's unflagged mode count.
+
+Unchanged: the paytable (§4), wild fall rules and the 15-cascade cap
+(§7.5-6), top-bar fill rates for every pre-existing tier (§6), base game's
+and mystery_enhancer's own tier quotas, max_or_zero's own economics (§10).
