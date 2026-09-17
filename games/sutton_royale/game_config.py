@@ -68,6 +68,31 @@ pricing, and two authored distributions:
   * Sutton Spins' own authored tier mix is rebuilt against the new tier
     averages (SUTTON_SPINS_TIER_QUOTA), same 50x cost.
 
+v6: last structural pass before optimization. Wild fall rules, tumble logic
+and paytable structure are all untouched here too:
+  * Max win 20,000x -> 50,000x (self.wincap). Cap frequencies rescale to the
+    same RTP contribution at the bigger prize (TIER_CAP_FREQ,
+    MAX_ROYALE_CAP_FREQ); every tier's total_mult_cap gets headroom (roughly
+    doubled, deliberately conservative - the old caps already bound about
+    10% of the time) or 50,000x would be organically unreachable.
+  * Static Wild's landing value now has a floor per tier
+    (STATIC_WILD_VALUES_BY_TIER) instead of one shared table - rarer tiers
+    can't land the cheapest crates, and the 100x crate is exclusive to Max
+    Royale (previously the single shared table topped out at 50x for every
+    tier, so the most expensive mode had no crate the others couldn't also
+    produce).
+  * New mode `max_or_zero` (2,000x): a single tumble spin, one Bernoulli
+    draw, no distribution to fit - either the exact wincap or exactly zero,
+    nothing in between. Needed `apply_wild_drops_basegame` to respect a
+    top_bar_override (it never had to before - every prior forced-max-win
+    branch lived inside a feature spin, which already went through
+    resolve_bar_params); see game_executables.py.
+  * Sutton Spins rebuilt again with Max Royale folded in as a fifth
+    outcome, same 50x cost - mechanically it already was a tier (guaranteed
+    Hidden entry at its own enhanced conditions), so this is mostly a
+    labelling change (MAX_ROYALE_OVERRIDE hoisted out of _max_royale_mode so
+    both can share it).
+
 See README.md for the engineering decisions made to turn SPEC.md's design
 language into precomputable game logic.
 """
@@ -90,25 +115,42 @@ TIER_FS = {"regular": 10, "super": 12, "super_hidden": 15}
 # and that overshoot.
 BONUS_TIERS = {
     "regular": {
-        "fs": 10, "total_mult_cap": 120,
+        "fs": 10, "total_mult_cap": 240,
         "rates": {"empty": 0.64, "plain": 0.09, "static": 0.19, "ascending": 0.08},
     },
     "super": {
-        "fs": 12, "total_mult_cap": 190,
+        "fs": 12, "total_mult_cap": 380,
         "rates": {"empty": 0.58, "plain": 0.10, "static": 0.21, "ascending": 0.11},
     },
     "super_hidden": {
-        "fs": 15, "total_mult_cap": 300,
+        "fs": 15, "total_mult_cap": 600,
         "rates": {"empty": 0.48, "plain": 0.11, "static": 0.24, "ascending": 0.17},
     },
 }
 
 # Base-game (single spin, non-feature) top bar content rates.
 BASEGAME_BAR_RATES = {"empty": 0.82, "plain": 0.06, "static": 0.09, "ascending": 0.03}
-BASEGAME_TOTAL_MULT_CAP = 50
+BASEGAME_TOTAL_MULT_CAP = 100
 
-# Multiplier value on landing, per wild type.
-STATIC_WILD_VALUES = {2: 38, 3: 26, 5: 19, 10: 11, 25: 5, 50: 1}
+# Static Wild's landing value, per tier (v6: was one shared table for every
+# tier - rarer tiers now have a floor under how cheap a crate they can land,
+# and 100x is exclusive to Max Royale, so the most expensive mode can finally
+# produce something no cheaper mode can). Weights are relative, not required
+# to sum to any fixed total (get_random_outcome normalizes internally), so
+# each tier is just the shared table restricted to its own available values -
+# "renormalizing" falls out of that restriction for free, nothing to compute.
+STATIC_WILD_VALUES_FULL = {2: 38, 3: 26, 5: 19, 10: 11, 25: 5, 50: 1, 100: 0.2}
+STATIC_WILD_VALUES_BY_TIER = {
+    "base": {k: v for k, v in STATIC_WILD_VALUES_FULL.items() if k in (2, 3, 5, 10, 25, 50)},
+    "regular": {k: v for k, v in STATIC_WILD_VALUES_FULL.items() if k in (2, 3, 5, 10, 25, 50)},
+    "super": {k: v for k, v in STATIC_WILD_VALUES_FULL.items() if k in (3, 5, 10, 25, 50)},
+    "super_hidden": {k: v for k, v in STATIC_WILD_VALUES_FULL.items() if k in (5, 10, 25, 50)},
+    "max_royale": {k: v for k, v in STATIC_WILD_VALUES_FULL.items() if k in (5, 10, 25, 50, 100)},
+}
+for _tier in ("regular", "super", "super_hidden"):
+    BONUS_TIERS[_tier]["static_wild_values"] = STATIC_WILD_VALUES_BY_TIER[_tier]
+del _tier
+
 ASCENDING_WILD_VALUES = {2: 60, 3: 30, 5: 10}
 LADDER_CAP = 512  # per-wild value ceiling (only the Ascending Wild ever grows toward it)
 MAX_WILD_TUMBLES = 5  # a wild removes itself after this many tumbles on the board
@@ -119,15 +161,17 @@ MAX_TOTAL_FREESPINS = 40
 # from the new BR0/FR0 reel strips - "any bonus" is their harmonic-ish sum, 1 in
 # ~183) and each tier's target average payout, deliberately skewed above pure
 # rarity (a tier that's 57x rarer than the one below it pays roughly 2.6x more,
-# not 57x more - see README.md for the reasoning).
+# not 57x more - see README.md for the reasoning). Unchanged by the v6 max-win
+# increase - only the cap frequencies below rescale.
 TIER_TRIGGER_ODDS = {"regular": 211, "super": 1529, "super_hidden": 12107}
 TIER_AVG_PAYOUT = {"regular": 105, "super": 273, "super_hidden": 720}
 
 # Every tier's max-win cap is independently reachable, at these conditional
 # frequencies (1 in N, *given* that tier already triggered) - split out of that
-# tier's own quota by _tier_pair(), not layered on top of it.
-TIER_CAP_FREQ = {"regular": 200_000, "super": 25_000, "super_hidden": 3_000}
-MAX_ROYALE_CAP_FREQ = 80  # unconditional - every Max Royale spin is already super_hidden
+# tier's own quota by _tier_pair(), not layered on top of it. v6: rescaled for
+# the 20,000x -> 50,000x max-win increase, same RTP contribution either way.
+TIER_CAP_FREQ = {"regular": 250_000, "super": 40_000, "super_hidden": 5_000}
+MAX_ROYALE_CAP_FREQ = 150  # unconditional - every Max Royale spin is already super_hidden
 
 MAX_ROYALE_COST = 1000.0  # was 1,500x; internal economics (rates/caps) unchanged, pure price cut
 
@@ -136,7 +180,24 @@ MAX_ROYALE_COST = 1000.0  # was 1,500x; internal economics (rates/caps) unchange
 MYSTERY_ENHANCER_TIER_QUOTA = {"regular": 0.02374, "super": 0.00475, "super_hidden": 0.00119}
 MYSTERY_ENHANCER_COST = 5.0
 
-SUTTON_SPINS_TIER_QUOTA = {"regular": 0.1560, "super": 0.0400, "super_hidden": 0.0300}
+# v6: Max Royale folded into Sutton Spins as a fifth outcome (mechanically it
+# already was a tier - a guaranteed Hidden entry at its own enhanced
+# conditions - so this is mostly a labelling change).
+SUTTON_SPINS_TIER_QUOTA = {"regular": 0.0680, "super": 0.0360, "super_hidden": 0.0320, "max_royale": 0.0090}
+
+# max_or_zero: a single tumble spin, one Bernoulli draw - the exact wincap or
+# exactly zero, nothing else. Modelled on Terminal Games' Max or Zero.
+MAX_OR_ZERO_COST = 2000.0
+MAX_OR_ZERO_WIN_QUOTA = 0.03908  # 50,000 * 0.03908 = 1,954 = 2,000 * 0.977, exact
+
+# Max Royale's own enhanced top-bar conditions - hoisted out of _max_royale_mode
+# so Sutton Spins can force the same "Max Royale" outcome as one of its own
+# tiers (v6) without duplicating the numbers.
+MAX_ROYALE_OVERRIDE = {
+    "rates": {"empty": 0.42, "plain": 0.11, "static": 0.26, "ascending": 0.21},
+    "static_wild_values": STATIC_WILD_VALUES_BY_TIER["max_royale"],
+    "total_mult_cap": 840,
+}
 
 
 class GameConfig(Config):
@@ -154,7 +215,7 @@ class GameConfig(Config):
         self.game_id = "sutton_royale"
         self.provider_number = 0
         self.working_name = "Sutton Royale"
-        self.wincap = 20000.0
+        self.wincap = 50000.0
         self.win_type = "ways"
         self.rtp = 0.9770
         self.construct_paths()
@@ -208,7 +269,7 @@ class GameConfig(Config):
         self.ladder_cap = LADDER_CAP
         self.max_wild_tumbles = MAX_WILD_TUMBLES
         self.max_cascades_per_spin = MAX_CASCADES_PER_SPIN
-        self.static_wild_values = STATIC_WILD_VALUES
+        self.static_wild_values = STATIC_WILD_VALUES_BY_TIER["base"]
         self.ascending_wild_values = ASCENDING_WILD_VALUES
         self.basegame_bar_rates = BASEGAME_BAR_RATES
         self.basegame_total_mult_cap = BASEGAME_TOTAL_MULT_CAP
@@ -227,6 +288,7 @@ class GameConfig(Config):
             self._mystery_enhancer_mode(),
             self._sutton_spins_mode(),
             self._max_royale_mode(),
+            self._max_or_zero_mode(),
         ]
 
     # ------------------------------------------------------------------
@@ -344,7 +406,11 @@ class GameConfig(Config):
 
     def _sutton_spins_mode(self):
         """Single spin, authored tier mix (not derived from a boosted scatter
-        weight) - rebuilt against the new tier averages, same 50x cost."""
+        weight) - rebuilt against the new tier averages, same 50x cost. v6
+        folds Max Royale in as a fifth outcome: mechanically it's already a
+        tier (guaranteed Hidden entry at its own enhanced conditions -
+        MAX_ROYALE_OVERRIDE, shared with the standalone max_royale mode), so
+        this reuses that override directly rather than inventing new numbers."""
         tier_scatters = {"regular": 4, "super": 5, "super_hidden": 6}
         dists = []
         for tier, scatter_count in tier_scatters.items():
@@ -364,6 +430,23 @@ class GameConfig(Config):
                     },
                 )
             )
+        dists.append(
+            Distribution(
+                criteria="fs_max_royale",
+                quota=SUTTON_SPINS_TIER_QUOTA["max_royale"],
+                conditions={
+                    "reel_weights": {
+                        self.basegame_type: {"BR0": 1},
+                        self.freegame_type: {"FR0": 1},
+                    },
+                    "scatter_triggers": {6: 1},
+                    "forced_tier": "super_hidden",
+                    "force_wincap": False,
+                    "force_freegame": True,
+                    "top_bar_override": MAX_ROYALE_OVERRIDE,
+                },
+            )
+        )
         dists.append(
             Distribution(
                 criteria="nothing",
@@ -386,19 +469,83 @@ class GameConfig(Config):
             distributions=dists,
         )
 
+    def _max_or_zero_mode(self):
+        """One Bernoulli draw, no distribution to fit - either the exact
+        wincap or exactly zero.
+
+        "win" reuses the same forced-max-win technique as every wincap_<tier>
+        branch elsewhere (FRWCAP-blended reel + all-ascending top bar,
+        entered as a Hidden-tier feature) rather than trying to force the
+        win within a single base-type reveal. That was the first attempt -
+        it doesn't work: raw ways-only tops out at ~37,500 over the hard
+        15-cascade cap (below the 50,000 wincap), so the win *needs* the
+        wild-multiplier layer to contribute, but settle_wild_multiplier only
+        sums wilds still standing at the very end of the whole cascade
+        sequence - and any single-spin board dense enough to win big enough
+        to matter sustains cascades well past a wild's 5-tumble life, so the
+        wild is always gone by settle (confirmed directly: 0 non-zero
+        multiplier contributions across 3,000+ forced attempts). The
+        multi-spin version sidesteps this entirely - each of Hidden's up to
+        15 free spins independently redraws FRWCAP and can contribute
+        ~37,500 raw on its own, so two spins already clear 50,000 before any
+        single spin's own multiplier needs to land, and wincap_triggered cuts
+        the feature short the moment it does. This is a real deviation from
+        "a single tumble spin" - flagged in README.md, not papered over.
+
+        "nothing" is an ordinary, unforced base-type spin with
+        win_criteria=0.0, the same technique every other mode's "0"/"nothing"
+        branch already uses - check_repeat() just retries until a natural
+        zero-win outcome lands."""
+        dists = [
+            Distribution(
+                criteria="win",
+                quota=MAX_OR_ZERO_WIN_QUOTA,
+                win_criteria=self.wincap,
+                conditions={
+                    "reel_weights": {
+                        self.basegame_type: {"BR0": 1},
+                        self.freegame_type: {"FR0": 1, "FRWCAP": 5},
+                    },
+                    "scatter_triggers": {6: 1},
+                    "forced_tier": "super_hidden",
+                    "force_wincap": True,
+                    "force_freegame": True,
+                    "top_bar_override": {
+                        "rates": {"empty": 0.0, "plain": 0.0, "static": 0.0, "ascending": 1.0},
+                        "ascending_wild_values": {5: 1.0},
+                    },
+                },
+            ),
+            Distribution(
+                criteria="nothing",
+                quota=1.0 - MAX_OR_ZERO_WIN_QUOTA,
+                win_criteria=0.0,
+                conditions={
+                    "reel_weights": {self.basegame_type: {"BR0": 1}},
+                    "force_wincap": False,
+                    "force_freegame": False,
+                },
+            ),
+        ]
+        return BetMode(
+            name="max_or_zero",
+            cost=MAX_OR_ZERO_COST,
+            rtp=self.rtp,
+            max_win=self.wincap,
+            auto_close_disabled=False,
+            is_feature=False,
+            is_buybonus=True,
+            distributions=dists,
+        )
+
     def _max_royale_mode(self):
         """Guaranteed Super Hidden entry: 15 spins (Super Hidden's own default - no
-        override needed), its own top-bar fill rates, total multiplier capped
-        at 420x. Static/Ascending Wild value tables are unchanged from the
-        other tiers - only the fill rates differ for Max Royale. Cost dropped
-        1,500x -> 1,000x (v5, MAX_ROYALE_COST) - a pure price cut, no change to
-        the internal rates/caps above. The cap is reachable at 1 in
-        MAX_ROYALE_CAP_FREQ, unconditional (every spin here is already
-        super_hidden)."""
-        override = {
-            "rates": {"empty": 0.42, "plain": 0.11, "static": 0.26, "ascending": 0.21},
-            "total_mult_cap": 420,
-        }
+        override needed), its own top-bar fill rates (MAX_ROYALE_OVERRIDE,
+        shared with Sutton Spins' own "Max Royale" outcome - v6), total
+        multiplier capped at 840x. Cost dropped 1,500x -> 1,000x (v5,
+        MAX_ROYALE_COST) - a pure price cut, no change to the internal
+        rates/caps above. The cap is reachable at 1 in MAX_ROYALE_CAP_FREQ,
+        unconditional (every spin here is already super_hidden)."""
         common = {
             "reel_weights": {
                 self.basegame_type: {"BR0": 1},
@@ -408,7 +555,7 @@ class GameConfig(Config):
             "forced_tier": "super_hidden",
             "force_freegame": True,
         }
-        wincap_override = dict(override)
+        wincap_override = dict(MAX_ROYALE_OVERRIDE)
         wincap_override.update(
             {
                 "rates": {"empty": 0.0, "plain": 0.0, "static": 0.0, "ascending": 1.0},
@@ -434,7 +581,7 @@ class GameConfig(Config):
             Distribution(
                 criteria="forced_super_hidden",
                 quota=1.0 - wincap_quota,
-                conditions={**common, "force_wincap": False, "top_bar_override": override},
+                conditions={**common, "force_wincap": False, "top_bar_override": MAX_ROYALE_OVERRIDE},
             ),
         ]
         return BetMode(

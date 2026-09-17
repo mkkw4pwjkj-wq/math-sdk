@@ -26,6 +26,7 @@ if __name__ == "__main__":
         "mystery_enhancer": 20_000,
         "sutton_spins": 10_000,
         "max_royale": 1_000,
+        "max_or_zero": 5_000,
     }
 
     run_conditions = {

@@ -17,6 +17,11 @@ proportion to their quota split, so the two files can't drift out of sync.
 Each mode's own basegame/nothing share absorbs whatever residual is needed to
 land on exactly 0.9770, since the authored tier averages (105/273/720x) don't
 sum to a clean total on their own.
+
+v6: wincap raised 20,000x -> 50,000x (av_win below follows game_config.wincap
+directly rather than a repeated literal); Sutton Spins gained a fifth,
+Max-Royale-flavoured criteria; and max_or_zero is a two-outcome Bernoulli
+mode, the simplest opt_params entry in the file.
 """
 
 from optimization_program.optimization_config import (
@@ -33,6 +38,7 @@ from game_config import (
     MYSTERY_ENHANCER_TIER_QUOTA,
     SUTTON_SPINS_TIER_QUOTA,
     MAX_ROYALE_CAP_FREQ,
+    MAX_OR_ZERO_WIN_QUOTA,
 )
 
 
@@ -73,7 +79,7 @@ class OptimizationSetup:
             fs_rtp, wincap_rtp = _tier_rtp_split(tier, base_tier_rtp[tier])
             base_conditions[f"fs_{tier}"] = ConstructConditions(rtp=fs_rtp, hr=TIER_TRIGGER_ODDS[tier]).return_dict()
             base_conditions[f"wincap_{tier}"] = ConstructConditions(
-                rtp=wincap_rtp, av_win=20000, search_conditions=20000
+                rtp=wincap_rtp, av_win=game_config.wincap, search_conditions=game_config.wincap
             ).return_dict()
 
         # mystery_enhancer: same tiers, own authored lottery odds instead of the
@@ -90,13 +96,19 @@ class OptimizationSetup:
                 rtp=fs_rtp, hr=round(1 / MYSTERY_ENHANCER_TIER_QUOTA[tier], 1)
             ).return_dict()
             enh_conditions[f"wincap_{tier}"] = ConstructConditions(
-                rtp=wincap_rtp, av_win=20000, search_conditions=20000
+                rtp=wincap_rtp, av_win=game_config.wincap, search_conditions=game_config.wincap
             ).return_dict()
 
         # Sutton Spins: authored tier mix, no separate wincap branch (unchanged
-        # structurally from earlier passes).
+        # structurally from earlier passes). v6 folds Max Royale in as a
+        # fifth outcome, targeting the same average payout as the standalone
+        # max_royale mode's own budget (its enhanced conditions are shared,
+        # via MAX_ROYALE_OVERRIDE, so its natural average should land near
+        # the same place).
         sutton_tier_rtp = {tier: TIER_AVG_PAYOUT[tier] * SUTTON_SPINS_TIER_QUOTA[tier] for tier in TIER_AVG_PAYOUT}
-        sutton_residual = round(game_config.rtp - sum(sutton_tier_rtp.values()), 5)
+        max_royale_avg_target = game_config.rtp * 1000  # matches max_royale mode's own 1,000x-cost budget
+        max_royale_rtp = SUTTON_SPINS_TIER_QUOTA["max_royale"] * max_royale_avg_target
+        sutton_residual = round(game_config.rtp - sum(sutton_tier_rtp.values()) - max_royale_rtp, 5)
         sutton_conditions = {
             "nothing": ConstructConditions(rtp=0.0, av_win=0.0).return_dict(),
             "fs_regular": ConstructConditions(
@@ -108,6 +120,9 @@ class OptimizationSetup:
             "fs_super_hidden": ConstructConditions(
                 rtp=sutton_tier_rtp["super_hidden"], hr=round(1 / SUTTON_SPINS_TIER_QUOTA["super_hidden"], 1)
             ).return_dict(),
+            "fs_max_royale": ConstructConditions(
+                rtp=round(max_royale_rtp, 5), hr=round(1 / SUTTON_SPINS_TIER_QUOTA["max_royale"], 1)
+            ).return_dict(),
         }
 
         # Max Royale: every spin is already super_hidden; the cap is reachable
@@ -118,8 +133,20 @@ class OptimizationSetup:
                 rtp=round(game_config.rtp * (1 - wincap_quota), 5), hr=1.0
             ).return_dict(),
             "wincap": ConstructConditions(
-                rtp=round(game_config.rtp * wincap_quota, 5), av_win=20000, search_conditions=20000
+                rtp=round(game_config.rtp * wincap_quota, 5),
+                av_win=game_config.wincap,
+                search_conditions=game_config.wincap,
             ).return_dict(),
+        }
+
+        # max_or_zero: one Bernoulli draw, no distribution to fit - by
+        # construction (MAX_OR_ZERO_WIN_QUOTA * wincap == cost * rtp exactly),
+        # its own rtp fraction is just game_config.rtp.
+        max_or_zero_conditions = {
+            "win": ConstructConditions(
+                rtp=game_config.rtp, av_win=game_config.wincap, search_conditions=game_config.wincap
+            ).return_dict(),
+            "nothing": ConstructConditions(rtp=0.0, av_win=0.0).return_dict(),
         }
 
         self.game_config.opt_params = {
@@ -165,6 +192,12 @@ class OptimizationSetup:
                 "distribution_bias": ConstructFenceBias(
                     applied_criteria=["forced_super_hidden"], bias_ranges=[(400.0, 3000.0)], bias_weights=[0.5]
                 ).return_dict(),
+            },
+            "max_or_zero": {
+                "conditions": max_or_zero_conditions,
+                "scaling": ConstructScaling([]).return_dict(),
+                "parameters": DEFAULT_PARAMETERS,
+                "distribution_bias": ConstructFenceBias(applied_criteria=[], bias_ranges=[], bias_weights=[]).return_dict(),
             },
         }
 

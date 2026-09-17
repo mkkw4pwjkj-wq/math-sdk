@@ -1,10 +1,135 @@
 # Sutton Royale - math-sdk implementation notes
 
-This implements SPEC.md **v5** (repo root - §17 covers the v3→v5 delta: wild
-lifecycle, then trigger odds/economics; §5/§6/§7.4-7/§8/§10/§11/§12 carry the
-current numbers directly). This file's own "v4"/"v4.1"/"v4.2" sections below
-predate that SPEC.md update and are kept as the engineering diary for the
-wild-lifecycle half of that delta.
+This implements SPEC.md **v6** (repo root - §18 covers the v5→v6 delta, §17
+covers v3→v5; §1/§5/§6/§7.4-7/§8/§10/§11/§12/§13 carry the current numbers
+directly). This file's own "v4"/"v4.1"/"v4.2" sections below predate that
+SPEC.md update and are kept as the engineering diary for the wild-lifecycle
+half of the v3→v5 delta.
+
+## v6: max win to 50,000x, per-tier crate floors, max_or_zero, Sutton Spins again
+
+Last structural pass before optimization. Nothing in the wild fall rules,
+tumble logic, or paytable structure changes here.
+
+**1. Max win 20,000x -> 50,000x.** Cap frequencies rescaled to the same RTP
+contribution at the bigger prize (`TIER_CAP_FREQ`: regular 1/250,000, super
+1/40,000, hidden 1/5,000; `MAX_ROYALE_CAP_FREQ`: 1/150). Total multiplier
+caps got headroom, roughly doubled rather than the full 2.5x the bigger max
+win alone would suggest - deliberately conservative, since the old caps
+already bound about 10% of the time (base 100x, regular 240x, super 380x,
+hidden 600x, max_royale 840x).
+
+**2. Static Wild's crate value now floors per tier.** One shared 6-value
+table (`STATIC_WILD_VALUES_FULL`) restricted per tier
+(`STATIC_WILD_VALUES_BY_TIER`) - base/regular keep all six values, super
+drops the 2x, hidden drops 2x and 3x too, and max_royale gets an exclusive
+new 100x on top of its own four. Since `get_random_outcome` normalizes
+weights internally, "renormalizing across whatever's available" needed no
+computation - each tier is just the shared table's weights subset to its own
+value list. `MAX_ROYALE_OVERRIDE` (rates + static values + total_mult_cap)
+was hoisted out of `_max_royale_mode()` to module level so Sutton Spins'
+new outcome (below) can share it exactly rather than duplicating numbers.
+
+**3. New mode `max_or_zero` (2,000x) - and a real, tested design conflict.**
+The brief: "a single tumble spin that either drops a max win symbol or
+doesn't... one Bernoulli draw, no distribution to fit." Built literally
+first - a forced base-type reveal (no free spins) with an all-ascending top
+bar and a homogeneous all-H1 reel blend (the same FRWCAP technique, a
+basegame-side "BRWCAP") - and it doesn't converge. Not a tuning problem: **it
+is mathematically impossible under this game's other unchanged rules.**
+Raw ways-only tops out at ~2,343.75 per tumble (5-of-5 on every reel,
+0.15 paytable x 15625 max ways); over the hard 15-cascade cap that's at most
+~37,500x total, short of the new 50,000x wincap. So the win *needs* the
+wild-multiplier layer to contribute something - but `settle_wild_multiplier`
+only sums wilds still standing at the very end of the whole cascade
+sequence, and any single-spin board dense enough to win big enough to
+matter sustains cascades well past a wild's 5-tumble life (that's the
+whole point of the age-out fix from v4 - a wild that keeps the board
+winning doesn't stop early). Tried three different reel densities
+(homogeneous, 80% H1, 40% H1, with and without full wild coverage);
+instrumented `settle_wild_multiplier` directly and confirmed **zero
+non-zero multiplier contributions across 3,000+ forced single-spin
+attempts** - the wild is provably always gone by settle time.
+
+Fix: route `max_or_zero`'s "win" branch through the same forced Hidden-tier
+feature entry every other `wincap_<tier>` branch already uses (FRWCAP blend
++ all-ascending top bar, `force_freegame=True`). Each of Hidden's up to 15
+free spins independently redraws FRWCAP and can contribute ~37,500x raw on
+its own, so two spins already clear 50,000x regardless of whether any
+single spin's own multiplier ever lands, and `wincap_triggered` ends the
+feature the moment it does - converges on the first attempt. **This is a
+real deviation from "a single tumble spin"** - mechanically it's a very
+short-lived Hidden bonus, not one reveal. Reachable only by changing wild
+lifetime or the cascade cap specifically for this mode, which is out of
+scope for this pass; flagging it rather than quietly reinterpreting the
+brief. "nothing" is unaffected - an ordinary unforced base spin with
+`win_criteria=0.0`, same technique as every other mode's "0"/"nothing"
+branch.
+
+**4. Sutton Spins rebuilt again**, folding Max Royale in as a fifth outcome.
+Since Max Royale mechanically already is a tier (guaranteed Hidden entry at
+its own enhanced conditions), its new `fs_max_royale` criteria just reuses
+`MAX_ROYALE_OVERRIDE` as a `top_bar_override` on a `forced_tier="super_hidden"`
+branch - no new numbers invented.
+
+**One thing not built**: the closing "menu is now six modes" line named two
+more modes ("bonus" 110x, "super_bonus" 280x) but gave no odds or tier mix
+for either - every other mode in this pass came with an explicit table to
+implement from. Left out rather than guessed at; flagging here so it isn't
+mistaken for an oversight.
+
+**Re-ran the same batch** (base 50,000 / mystery_enhancer 20,000 /
+sutton_spins 10,000 / max_royale 1,000 / max_or_zero 5,000, optimization
+off):
+
+| Mode | RTP (raw x) | Target (0.977×cost) | Any-win | Bonus-award | Bonus count |
+|---|---|---|---|---|---|
+| base | 3.99x | 0.98x | 22.26% | 0.55% | 275 |
+| mystery_enhancer | 12.53x | 4.89x | 79.15% | 2.97% | 594 |
+| sutton_spins | 30.49x | 48.85x | 82.05% | 14.50% | 1,450 |
+| max_royale | 795.21x | 977x | 100% | 100% | 1,000 |
+| max_or_zero | 1,950.00x | 1,954x | 3.90% | 3.90% | 195 |
+
+**Base hit frequency check (explicitly asked for): 22.26%, essentially
+unchanged from every prior pass (22.28% last time).** This pass didn't touch
+base's own paytable, wild rates, or trigger odds - only the rare bonus
+tail's caps and crate floors - so base's hit rate was never at risk this
+time, and it shows: nowhere near the 20% floor that would call for pulling
+return back out of the tail.
+
+**max_or_zero verification**: win rate 3.900% (target 3.908%, n=5,000 - well
+within sampling noise), and exactly two distinct payout values across all
+5,000 sims: **0x and 50,000x, nothing else.** The Bernoulli draw is clean.
+
+**Tier averages** (pooled base+mystery_enhancer+sutton_spins; sutton_spins'
+new Max-Royale outcome and its natural Hidden trigger both emit `totalFs=15`
+and are indistinguishable from the event stream alone, so they're pooled
+into "super_hidden" below - flagged, not hidden):
+
+| Tier | n | Avg payout | Target | Gap |
+|---|---|---|---|---|
+| regular | 1,218 | 128.31x | 105x | 1.22x (22% hot) |
+| super | 585 | 403.36x | 273x | 1.48x (48% hot) |
+| super_hidden | 1,516 | 717.55x | 720x | 1.00x (essentially exact) |
+
+**Cap-hit frequency per tier trigger, per mode** (same diagnostic-scale
+caveat as every prior pass - each `wincap_<tier>`/`wincap` criteria's quota
+floors to at least 1 simulated instance regardless of how small, so these
+counts confirm the forcing mechanism fires and converges, not yet the true
+1-in-N production odds): base regular 1/200, super 1/54, super_hidden 1/21;
+mystery_enhancer regular 0/414, super 2/137, super_hidden 1/43; sutton_spins
+0/604, 0/394, 0/452 (its own tiers don't carry a dedicated wincap branch,
+unchanged from earlier passes); max_royale super_hidden 6/1,000. Every
+branch that has a wincap path produced at least one exact 50,000x hit.
+
+**Max Royale payout distribution** (n=1,000): mean 795.21, median 449.40 -
+both up from v5's 646.26/366.10, consistent with the higher cap headroom
+(840x vs 420x) doing some of its intended work already, ahead of
+optimization.
+
+Cascade-length distribution is unaffected (fall rules untouched): max chain
+length across 185,851 spins is still 15 (hard cap), same shape as every pass
+since v4.2.
 
 ## v5: trigger-odds and pricing revision
 
