@@ -17,21 +17,20 @@ if __name__ == "__main__":
     compression = True
     profiling = False
 
-    # Diagnostic run size (requested): large enough to see max_royale's payout
-    # spread and an Ascending-Wild doublings-per-spin distribution, still well
-    # short of SPEC.md's real counts (base 1_000_000 / mystery_enhancer 200_000 /
-    # sutton_spins 500_000 / max_royale 200_000), which need run_optimization on.
+    # Production run: SPEC.md's real counts. max_or_zero has no SPEC.md-specified
+    # count of its own (a v6 addition) - set to match max_royale's, the closest
+    # mode by cost order of magnitude.
     num_sim_args = {
-        "base": 50_000,
-        "mystery_enhancer": 20_000,
-        "sutton_spins": 10_000,
-        "max_royale": 1_000,
-        "max_or_zero": 5_000,
+        "base": 1_000_000,
+        "mystery_enhancer": 200_000,
+        "sutton_spins": 500_000,
+        "max_royale": 200_000,
+        "max_or_zero": 200_000,
     }
 
     run_conditions = {
         "run_sims": True,
-        "run_optimization": False,
+        "run_optimization": True,
         "run_analysis": False,
         "run_format_checks": True,
     }

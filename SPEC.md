@@ -221,10 +221,12 @@ cap frequency   1 in 250,000  1 in 40,000  1 in 5,000
 ```
 
 Cap frequency is conditional — 1 in N of that tier's own triggers, not of all
-spins — and applies independently to every tier. Previously only Hidden could
-reach the cap; now every tier can, at its own stated rate. Target average
-payouts (105x/273x/720x) are unchanged - only the cap-reachability layer
-rescaled.
+spins. Base/mystery_enhancer's *aggregate* cap-hit rate is these three
+numbers combined into each mode's one shared "wincap" criteria (see §18's
+optimizer note - a fence-matching constraint means a mode can't carry three
+separately-forced branches that all land on the identical 50,000x value).
+Target average payouts (105x/273x/720x) are unchanged - only the
+cap-reachability layer rescaled.
 
 Retrigger on 3+ scatters awards 5 extra spins. **Hard cap 40 total spins.**
 
@@ -360,8 +362,13 @@ other wincap-forced branch does (§8) - each of Hidden's up to 15 free spins
 can independently contribute ~37,500× raw, so two spins already clear
 50,000× before any single spin's own multiplier needs to land, and the round
 ends the moment it does. Reachable only by changing wild lifetime or the
-cascade cap for this one mode specifically - out of scope for this pass,
-flagged rather than done quietly.
+cascade cap for this one mode specifically - rejected: that mechanism broke
+the chain-length model three times already (§16, §18) and isn't worth
+reopening for one mode. **Accepted as a known, permanent implementation
+detail, not an open question**: player-facing the outcome is exactly binary
+(0 or 50,000×, confirmed directly across every simulated instance), which is
+what the spec actually requires; the internal route there is a short-lived
+forced feature entry rather than a literal single reveal.
 
 ## 11. RTP allocation
 
@@ -517,7 +524,7 @@ current numbers and §16 above for the table this replaced.
 | Any-bonus odds | 1 in 386 | 1 in 183 |
 | enhancer mode | 3x, boosted-scatter reel | `mystery_enhancer`, 5x, authored lottery |
 | Max Royale cost | 1,500x | 1,000x |
-| Every tier's cap reachable | Hidden only | Regular, Super, and Hidden independently |
+| Every tier's cap reachable | Hidden only | Regular, Super, and Hidden (see §18 - the *combined rate* survived, "independently" as three separately-forced branches did not) |
 
 Unchanged across both: the paytable (§4), the multiplier engine's core rules
 (doubling, 512× per-wild ceiling, once-per-spin summed application - §7.1-4),
@@ -550,7 +557,34 @@ Last structural pass before optimization. Nothing in the wild fall rules
   labelling change, not new economics.
 - A later planning note mentioned two more modes ("bonus" 110x, "super_bonus"
   280x) as part of a six-mode menu, but specified no odds or tier mix for
-  either - not built this pass (§10).
+  either - not built this pass (§10). Checked directly in the code
+  afterward, on request: neither exists. They were never built in any
+  pass - there's no prior version to have "still" wired.
+- **Per-tier wincap forcing consolidated back to one "wincap" criteria per
+  mode** (base, mystery_enhancer) - discovered only once the optimizer
+  actually ran for the first time this pass (every prior pass had
+  `run_optimization` off). The three separate `wincap_<tier>` branches from
+  earlier in this pass all converge to the identical exact 50,000x value,
+  and the optimizer's fence-matcher assigns simulated books to a fence by
+  payout value - it has no way to tell three same-value fences apart, so the
+  second and third always matched zero books ("must be...mutually
+  exclusive" is its own error text). Fix keeps the *combined* cap-hit rate
+  every tier was meant to add up to (still forced through Hidden's own
+  richest conditions, same FRWCAP technique) but drops the pretense that a
+  specific tier's own forced branch, distinguishable from the others,
+  produced any given cap hit. §8's per-tier cap frequencies remain the
+  target for that combined rate's composition, not three separately
+  verifiable rates.
+- **A units bug in game_optimization.py**, also only surfacing once the
+  optimizer ran: two modes' (mystery_enhancer, Sutton Spins) per-criteria
+  RTP targets were raw-x contributions (avg payout × quota) fed directly
+  into a field that must be a cost-normalized fraction, producing wildly
+  negative targets for their own "nothing" and "fs_regular" criteria that
+  the sum-only assertion in `verify_optimization_input` couldn't catch
+  (everything still summed to 0.9770 - the individual signs just
+  cancelled). Not a SPEC-level change, noted here since it blocked the
+  first optimization run for reasons that had nothing to do with the
+  game's actual math.
 
 Unchanged: the paytable (§4), wild fall rules and the 15-cascade cap (§7.5-6),
 top-bar fill rates (§6), tier trigger odds and target average payouts (§8),

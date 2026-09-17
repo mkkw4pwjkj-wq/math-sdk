@@ -11,6 +11,44 @@ half of the v3→v5 delta.
 Last structural pass before optimization. Nothing in the wild fall rules,
 tumble logic, or paytable structure changes here.
 
+**Two follow-up fixes, both found only once `run_optimization` was actually
+switched on for the first time** (every prior pass ran with it off, so
+neither had ever been exercised):
+
+1. **Per-tier wincap forcing doesn't work with this SDK's Rust optimizer.**
+   Base and mystery_enhancer each had three separate `wincap_<tier>` branches
+   (one per tier, per the "every tier's own cap is independently reachable"
+   design from two passes ago) - all three converge to the identical exact
+   50,000x. The optimizer's fence-matcher assigns simulated books to a fence
+   by payout value alone, so three fences targeting the same value aren't
+   "mutually exclusive" (its own error text) and the second and third always
+   match zero books - `optimizer fence 'wincap_super' matched 0 books`.
+   Consolidated to one shared "wincap" criteria per mode
+   (`game_config._tier_natural` / `_shared_wincap`), quota = the sum of what
+   the three separate branches would have been, still forced through
+   Hidden's own richest conditions. The *combined* cap-hit rate survives;
+   "which tier's own forcing produced this hit" as a separately-verifiable
+   thing does not, because it can't be told apart from the others by this
+   optimizer regardless of how it's built.
+2. **A real units bug**, unrelated to the above: `mystery_enhancer`'s and
+   Sutton Spins' per-criteria RTP targets in `game_optimization.py` were raw
+   payout×quota contributions (e.g. `105 * 0.02374` for mystery_enhancer's
+   regular tier) fed straight into `ConstructConditions(rtp=...)`, which
+   needs a *cost-normalized fraction* (the same 0.9770 target for every mode
+   regardless of cost - `verify_optimization_input` checks each mode's
+   conditions sum to exactly that). Missing the `/ cost` step meant
+   `mystery_enhancer`'s own "nothing" criteria carried an RTP target of
+   roughly **-3.67** and Sutton Spins' "fs_regular" carried **-40.68** -
+   `verify_optimization_input`'s sum-only assertion never caught it, since
+   the total across all of a mode's criteria still landed on exactly 0.9770
+   (the signs just cancelled). Fixed by dividing every raw-x contribution by
+   that mode's own cost before it becomes an `rtp=` value.
+
+Both were caught by actually running the Rust optimizer end to end for
+every mode at moderate sim counts before committing to the full production
+run - not something the earlier diagnostic-scale passes (`run_optimization`
+always off) could have surfaced.
+
 **1. Max win 20,000x -> 50,000x.** Cap frequencies rescaled to the same RTP
 contribution at the bigger prize (`TIER_CAP_FREQ`: regular 1/250,000, super
 1/40,000, hidden 1/5,000; `MAX_ROYALE_CAP_FREQ`: 1/150). Total multiplier
@@ -60,9 +98,13 @@ single spin's own multiplier ever lands, and `wincap_triggered` ends the
 feature the moment it does - converges on the first attempt. **This is a
 real deviation from "a single tumble spin"** - mechanically it's a very
 short-lived Hidden bonus, not one reveal. Reachable only by changing wild
-lifetime or the cascade cap specifically for this mode, which is out of
-scope for this pass; flagging it rather than quietly reinterpreting the
-brief. "nothing" is unaffected - an ordinary unforced base spin with
+lifetime or the cascade cap specifically for this mode - explicitly rejected
+on review, since that mechanism broke the chain-length model three times
+already and isn't worth reopening for one mode. **Accepted as a known,
+permanent implementation detail**: player-facing the outcome is exactly
+binary (0x or 50,000x, confirmed above), which is what actually matters -
+the routing underneath is not something future passes need to revisit.
+"nothing" is unaffected - an ordinary unforced base spin with
 `win_criteria=0.0`, same technique as every other mode's "0"/"nothing"
 branch.
 

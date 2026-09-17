@@ -294,17 +294,18 @@ class GameConfig(Config):
     # ------------------------------------------------------------------
     # Bet mode construction
     # ------------------------------------------------------------------
-    def _tier_pair(self, tier, criteria_prefix, total_quota, cap_freq, extra_conditions=None):
-        """Split a tier's total trigger probability into its ordinary branch and a
-        tiny forced-max-win branch, so that tier's own cap is reachable at the
-        stated conditional frequency (1 in cap_freq, *given* the tier triggers at
-        all) - the same all-ascending-wild-plus-FRWCAP forcing technique used
-        everywhere else, just no longer confined to super_hidden."""
+    def _tier_natural(self, tier, criteria_prefix, total_quota, cap_freq, extra_conditions=None):
+        """A tier's ordinary trigger branch, at its total quota minus the slice
+        carved out for that tier's own share of the mode's shared "wincap"
+        criteria (see _shared_wincap) - the cap is still reachable at the
+        stated conditional frequency (1 in cap_freq, *given* the tier triggers
+        at all), just forced through one consolidated branch rather than a
+        separate one per tier."""
         scatter_count = {"regular": 4, "super": 5, "super_hidden": 6}[tier]
         wincap_quota = total_quota / cap_freq
         natural_quota = total_quota - wincap_quota
 
-        base_cond = {
+        cond = {
             "reel_weights": {
                 self.basegame_type: {"BR0": 1},
                 self.freegame_type: {"FR0": 1},
@@ -312,29 +313,46 @@ class GameConfig(Config):
             "scatter_triggers": {scatter_count: 1},
             "forced_tier": tier,
             "force_freegame": True,
+            "force_wincap": False,
         }
         if extra_conditions:
-            base_cond.update(extra_conditions)
+            cond.update(extra_conditions)
+        return Distribution(criteria=f"{criteria_prefix}_{tier}", quota=natural_quota, conditions=cond)
 
-        natural_cond = {**base_cond, "force_wincap": False}
-        wincap_cond = {
-            **base_cond,
-            "reel_weights": {
-                self.basegame_type: {"BR0": 1},
-                self.freegame_type: {"FR0": 1, "FRWCAP": 5},
+    def _shared_wincap(self, tier_total_quota, cap_freq):
+        """One "wincap" criteria per mode, quota = sum of every tier's own
+        1-in-cap_freq slice (see _tier_natural). Forces Hidden's own top-bar
+        conditions (richest headroom, same FRWCAP-blend technique used
+        everywhere else) rather than a separate, payout-indistinguishable
+        branch per tier: the optimizer's fence-matcher assigns books to a
+        fence purely by payout value, and every tier's forced branch lands on
+        the exact same self.wincap - so three same-mode criteria all
+        targeting 50,000x are not "mutually exclusive" (its own error
+        message's phrase) and the second and third fences it tries to build
+        always match zero books. This keeps the *aggregate* cap-hit rate the
+        several tiers were meant to add up to; it does not keep them
+        separately distinguishable in the LUT, which turned out to be
+        impossible given how this fence-matcher works, not a design choice."""
+        wincap_quota = sum(tier_total_quota[tier] / cap_freq[tier] for tier in tier_total_quota)
+        return Distribution(
+            criteria="wincap",
+            quota=wincap_quota,
+            win_criteria=self.wincap,
+            conditions={
+                "reel_weights": {
+                    self.basegame_type: {"BR0": 1},
+                    self.freegame_type: {"FR0": 1, "FRWCAP": 5},
+                },
+                "scatter_triggers": {6: 1},
+                "forced_tier": "super_hidden",
+                "force_freegame": True,
+                "force_wincap": True,
+                "top_bar_override": {
+                    "rates": {"empty": 0.0, "plain": 0.0, "static": 0.0, "ascending": 1.0},
+                    "ascending_wild_values": {5: 1.0},
+                },
             },
-            "force_wincap": True,
-            "top_bar_override": {
-                "rates": {"empty": 0.0, "plain": 0.0, "static": 0.0, "ascending": 1.0},
-                "ascending_wild_values": {5: 1.0},
-            },
-        }
-        return [
-            Distribution(criteria=f"{criteria_prefix}_{tier}", quota=natural_quota, conditions=natural_cond),
-            Distribution(
-                criteria=f"wincap_{tier}", quota=wincap_quota, win_criteria=self.wincap, conditions=wincap_cond
-            ),
-        ]
+        )
 
     def _base_mode(self):
         """Regular/Super/Hidden trigger at the new reel-driven odds
@@ -346,9 +364,8 @@ class GameConfig(Config):
         zero_share, basegame_share = 0.7200, 0.2777  # prior split, preserved proportionally
         split = zero_share / (zero_share + basegame_share)
 
-        dists = []
-        for tier in ("regular", "super", "super_hidden"):
-            dists += self._tier_pair(tier, "fs", tier_total_quota[tier], TIER_CAP_FREQ[tier])
+        dists = [self._tier_natural(tier, "fs", tier_total_quota[tier], TIER_CAP_FREQ[tier]) for tier in tier_total_quota]
+        dists.append(self._shared_wincap(tier_total_quota, TIER_CAP_FREQ))
         dists.append(
             Distribution(
                 criteria="0",
@@ -382,10 +399,13 @@ class GameConfig(Config):
         one - but tier-triggering is decided by this mode's own authored
         per-spin lottery (MYSTERY_ENHANCER_TIER_QUOTA) instead of a
         boosted-scatter reel, at odds well above the shared reel-driven ones.
-        Same _tier_pair() cap-reachability split as base."""
-        dists = []
-        for tier in ("regular", "super", "super_hidden"):
-            dists += self._tier_pair(tier, "fs", MYSTERY_ENHANCER_TIER_QUOTA[tier], TIER_CAP_FREQ[tier])
+        Same shared-"wincap" cap-reachability split as base (_tier_natural /
+        _shared_wincap)."""
+        dists = [
+            self._tier_natural(tier, "fs", MYSTERY_ENHANCER_TIER_QUOTA[tier], TIER_CAP_FREQ[tier])
+            for tier in MYSTERY_ENHANCER_TIER_QUOTA
+        ]
+        dists.append(self._shared_wincap(MYSTERY_ENHANCER_TIER_QUOTA, TIER_CAP_FREQ))
         dists.append(
             Distribution(
                 criteria="nothing",
@@ -473,8 +493,8 @@ class GameConfig(Config):
         """One Bernoulli draw, no distribution to fit - either the exact
         wincap or exactly zero.
 
-        "win" reuses the same forced-max-win technique as every wincap_<tier>
-        branch elsewhere (FRWCAP-blended reel + all-ascending top bar,
+        "win" reuses the same forced-max-win technique as every mode's shared
+        "wincap" criteria (FRWCAP-blended reel + all-ascending top bar,
         entered as a Hidden-tier feature) rather than trying to force the
         win within a single base-type reveal. That was the first attempt -
         it doesn't work: raw ways-only tops out at ~37,500 over the hard
