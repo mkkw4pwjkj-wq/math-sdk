@@ -1,10 +1,98 @@
 # Sutton Royale - math-sdk implementation notes
 
-This implements SPEC.md **v6** (repo root - §18 covers the v5→v6 delta, §17
-covers v3→v5; §1/§5/§6/§7.4-7/§8/§10/§11/§12/§13 carry the current numbers
-directly). This file's own "v4"/"v4.1"/"v4.2" sections below predate that
-SPEC.md update and are kept as the engineering diary for the wild-lifecycle
-half of the v3→v5 delta.
+This implements SPEC.md **v7** (repo root - §19 covers the v6→v7 delta, §18
+covers v5→v6, §17 covers v3→v5; §1/§5/§6/§7.4-7/§8/§10/§11/§12/§13 carry the
+current numbers directly). This file's own "v4"/"v4.1"/"v4.2" sections below
+predate that SPEC.md update and are kept as the engineering diary for the
+wild-lifecycle half of the v3→v5 delta.
+
+## v7: Sutton Spins reprice, royale_mystery replaces max_royale, bonus/super_bonus - and a serious pre-existing optimizer bug found
+
+Mode-menu changes (see SPEC.md §10/§19 for the full numbers): Sutton Spins
+repriced 50x→60x with a rebuilt odds table and, for the first time, its own
+combined wincap criteria; `max_royale` retired in favour of `royale_mystery`
+(900x, a guaranteed Super Hidden entry upgrading to Max Royale at 60/40);
+two new guaranteed-entry modes, `bonus` (110x) and `super_bonus` (280x).
+Nothing in the wild engine, tumble logic, or paytable changes here.
+
+**Infra bug, found before any sim ran:** `run.py` was set to
+`num_threads=10`/`rust_threads=20` on a container with 4 CPUs/16GB RAM.
+`bonus`/`super_bonus`/`royale_mystery` are 100%-guaranteed-feature modes -
+every sim runs a full free-spin sequence, unlike base/sutton_spins where
+most sims are cheap single reveals - and each accumulates roughly 0.5MB/sim
+in memory with nothing flushed to disk until the whole per-thread batch
+finishes. Ten parallel processes each holding a large in-memory batch drove
+the box to its RAM ceiling and OOM-killed some worker processes mid-batch;
+the only visible symptom in the parent process was a `FileNotFoundError` on
+a missing per-thread temp file, which looked exactly like a `bonus`-mode
+game-logic bug. Verified it wasn't, directly rather than by inference:
+isolated single-process reproduction showed both the `wincap` and
+`fs_regular` criteria converging in exactly 1 attempt every time - no
+retry-loop, no infinite recursion. Fixed by dropping to `num_threads=4`
+(=nproc) and `batching_size=1000`, which bounds peak memory regardless of
+how rich a given mode's average book is.
+
+**A second, much bigger, pre-existing bug - found only because this is the
+first pass where a full production run (sims → `run_optimization` →
+`run_format_checks`) ever actually completed instead of being interrupted
+partway through.** After the fix above, the full production run (base 1M /
+mystery_enhancer 200k / sutton_spins 500k / bonus 200k / super_bonus 200k /
+royale_mystery 200k / max_or_zero 200k) completed with exit code 0 and
+`execute_all_tests` printed only non-fatal "fails 3-star volatility limits"
+warnings - which turned out to be actively misleading, because
+`verify_mode_volatility` only checks whether RTP *exceeds* a 0.967 ceiling;
+it says nothing when RTP is far too low. Computing each mode's real RTP
+directly from its optimized lookup table (weighted mean payout / 100 / cost,
+cross-checked against the warning text's own reported values for the modes
+that *did* get flagged, to confirm the methodology) gave:
+
+```
+mode               target    actual
+base                97.70%    7.37%
+mystery_enhancer    97.70%   13,439%   (!)
+sutton_spins        97.70%    9.23%
+bonus               97.70%   97.70%   - correct
+super_bonus         97.70%   97.70%   - correct
+royale_mystery      97.70%   117.26%  - moderate overshoot
+max_or_zero         97.70%   97.70%   - correct (deterministic Bernoulli, nothing to optimize)
+```
+
+base and sutton_spins collapsed to ~99.99%/~99.4% of all weight sitting on
+a payout of exactly zero (should be ~72-78%, matching their own "0"/
+"nothing" quota); mystery_enhancer collapsed the opposite way, to ~0.01%
+zero-weight (should be ~97%), with a huge share of weight parked on a
+single arbitrary non-zero payout. **Isolated and confirmed the root cause
+directly, not by inference**: reran `base` alone, at a smaller scale
+(100k sims), completely separated from every other mode and from any v7
+code path - it reproduced the identical collapse (99.99% zero-weight,
+RTP 4.9%). Base's own opt_params are untouched by v7, and the pre-
+optimization sim data is fine (the 20-50k verification pass, optimization
+off, measured base's hit rate at 22.24% - squarely in range). So the
+corruption is introduced specifically by the Rust optimizer's fence-
+combination step, and it predates this pass entirely - it was simply never
+exercised before, because every previous full-scale attempt was interrupted
+(manually stopped, or killed by the infra bug above) before reaching
+`run_format_checks`.
+
+The three broken modes (base, mystery_enhancer, sutton_spins) share a
+structural trait the three fully-correct ones (bonus, super_bonus,
+max_or_zero) don't: they combine a fixed-exact-zero ("0"/"nothing")
+fence together with several independently-reshaped fences.
+royale_mystery's milder 117% overshoot has no zero fence either, but does
+combine three non-trivial reshaped fences (fs_max_royale, fs_super_hidden,
+wincap) - plausibly a softer symptom of the same underlying combination
+issue, without the zero-branch pathology needed to make it catastrophic.
+This is a strong lead, not a confirmed fix - the actual bug lives somewhere
+in `optimization_program/`'s fence-combination logic, not in this game's
+own `game_config.py`/`game_optimization.py`.
+
+**Decision this pass: document and stop, per explicit instruction - no fix
+or workaround attempted.** The published v7 books/LUTs for base,
+mystery_enhancer and sutton_spins are the corrupted optimizer output and
+**must not be treated as shippable** until this is fixed. bonus,
+super_bonus and max_or_zero are correct as published; royale_mystery is
+close but needs another optimization pass once the underlying bug is
+understood.
 
 ## v6: max win to 50,000x, per-tier crate floors, max_or_zero, Sutton Spins again
 
