@@ -31,23 +31,25 @@ if __name__ == "__main__":
     compression = True
     profiling = False
 
-    # v7 verification pass (SPEC.md section 10): build/verify at reduced sim
-    # counts with optimization off before committing to the full run below.
+    # v7 production run (SPEC.md section 10). The 20-50k verification pass
+    # above passed: award rates matched authored quotas almost exactly for
+    # every new/changed mode, no saturated caps, retrigger handling uniform
+    # across bonus/super_bonus/royale_mystery.
     num_sim_args = {
-        "base": 50_000,
-        "mystery_enhancer": 30_000,
-        "sutton_spins": 50_000,
-        "bonus": 20_000,
-        "super_bonus": 20_000,
-        "royale_mystery": 20_000,
-        "max_or_zero": 20_000,
+        "base": 1_000_000,
+        "mystery_enhancer": 200_000,
+        "sutton_spins": 500_000,
+        "bonus": 200_000,
+        "super_bonus": 200_000,
+        "royale_mystery": 200_000,
+        "max_or_zero": 200_000,
     }
 
     run_conditions = {
         "run_sims": True,
-        "run_optimization": False,
+        "run_optimization": True,
         "run_analysis": False,
-        "run_format_checks": False,
+        "run_format_checks": True,
     }
     target_modes = list(num_sim_args.keys())
 
