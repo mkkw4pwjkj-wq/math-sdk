@@ -7,36 +7,53 @@ run_mystery_spin / run_last_rites_spin) and are intentionally excluded -
 matching the fifty_fifty convention for modes with an exact, hand-set outcome
 distribution that the optimizer would have nothing to search for.
 
-Every "wincap" and "0" fence below is given an explicit `hr`, computed
-self-consistently from its own rtp/av_win target. This is deliberate, not
-cosmetic: a fence left without `hr` falls into the Rust optimizer's
-residual branch (`if fence.hr == -1.0: fence.hr = 1.0/(1.0 - total_prob)`,
-optimization_program/src/main.rs ~110-114 and ~833-838), which is meant to
-let exactly ONE genuine catch-all fence per mode absorb whatever
-probability mass the other, explicitly-specified fences don't claim.
-Direct research into that code found:
-  - `total_prob` is accumulated once before the loop and is not updated as
-    each fence is resolved, so if MORE THAN ONE fence lacks `hr` (which was
-    the case for every "wincap"+"0" pair here), they silently share the
-    same wrong residual value instead of each getting a distinct one.
-  - For a pinned, exact-payout fence (any fence using `search_conditions=`
-    a single value, like wincap or "0" here), falling into that branch
-    also overwrites its `avg_win` as `hr * rtp` using the corrupted
-    residual `hr` - which can turn a "1-in-tens-of-millions" wincap fence
-    into an effectively "1-in-hundreds-to-thousands" one (traced through
-    by hand for inferno's wincap+freegame pair: residual hr collapses to
-    roughly 1000 instead of the ~50,000,000 implied by its own
-    rtp=0.001/av_win=wincap pairing - a ~50,000x error in the wrong
-    direction). There is no post-solve check anywhere in the Rust program
-    or optimization_program/run_script.py comparing achieved vs target
-    RTP, and it exits 0 regardless - this would not be caught by the
-    pipeline itself, only by inspecting the result (see
-    verify_production_rtp.py) or, as here, by not exercising the buggy
-    path at all.
-Every fence here is now given hr explicitly, so none of them takes that
-path; the ONE fence per mode intentionally left without hr (basegame for
-base/heat_spin) is deliberately the sole real catch-all, as in the SDK's
-own reference games (e.g. games/0_0_ways).
+--- The real constraint here, found the hard way ---
+
+A previous version of this file gave every "wincap" and "0" fence an
+explicit `hr`, reasoning that leaving `hr` unset was what let the Rust
+optimizer's residual branch (main.rs's `if fence.hr == -1.0: fence.hr =
+1.0/(1.0-total_prob)`) silently corrupt RTP when more than one fence relied
+on it. That diagnosis was right, but the fix was backwards. Running the
+actual optimizer exposed the real invariant: **within one mode, every
+fence's `1/hr` must sum to exactly 1** (every simulated round falls into
+exactly one criteria bucket). The Rust program has no step that normalizes
+this automatically - `main.rs:343` divides realized RTP by the fences'
+combined weight, so if Sigma(1/hr) < 1, the whole mode's RTP is silently
+scaled up by 1/Sigma(1/hr). Verified numerically against the actual output
+files to 10+ significant digits:
+
+    mode        Sigma(1/hr) declared   observed RTP   1/Sigma predicted
+    base        0.847976983513         1.152153912580  1.179270 (matches)
+    heat_spin   0.909650653351         80.536632090759 1.099322x75 (matches)
+    inferno     0.999001019001         1953.952961881954 1.001 (matches)
+
+Giving every fence an explicit hr (the previous version of this file)
+removes every fence from the residual branch, so nothing forces Sigma(1/hr)
+to 1 - it was the exact opposite of a fix. Only ONE fence per mode may (and
+must) be the residual: per `optimization_config.py`'s ConstructConditions,
+a fence must declare at least two of (rtp, av_win, hr); a fence pinned at
+rtp=0, av_win=0 is the only one where NEITHER value lets the Rust code
+derive `hr` at parse time (main.rs:816-822 all require rtp>0 or av_win>0),
+so it's the only fence that safely falls through to the residual branch
+without corrupting anything (its own rtp target is 0 regardless of what hr
+it receives). This is also why every SDK reference game (0_0_ways,
+0_0_cluster, 0_0_lines, 0_0_expwilds) leaves exactly "0" without hr and
+gives every other fence one.
+
+That reference convention makes the "0" fence's hit-rate whatever is left
+over - here, that would silently overwrite base's ~49.5% hit-frequency
+(confirmed against direct simulation, matching spec amendment v1.1 §6) and
+heat_spin's ~26% bust rate (matching the spec's own "ours" comparator
+column in v1.1 §4) with an arbitrary residual instead. To keep those
+verified numbers authoritative, "0" below stays pinned at its own,
+simulation-derived hr, and the mode's other free-standing fence (basegame,
+or inferno's freegame, which has no "0" fence at all) has its hr solved
+for instead, so Sigma(1/hr) == 1 holds exactly while every OTHER fence's
+own target stays exactly what was verified by simulation. wincap's hr is
+simply omitted everywhere: main.rs:822 derives it correctly - as
+`av_win/(rtp*cost)` - which a hand-computed `av_win/rtp` (the previous
+version of this file) gets wrong for any mode whose cost != 1 (it silently
+made heat_spin's and inferno's wincap 75x/2000x rarer than intended).
 """
 
 from optimization_program.optimization_config import (
@@ -47,6 +64,35 @@ from optimization_program.optimization_config import (
 )
 
 
+def _solve_residual_hr(*other_hrs: float) -> float:
+    """hr for the one fence that must absorb whatever probability the
+    other (already fixed) fences in the mode don't claim, so that
+    Sigma(1/hr) over the whole mode equals exactly 1."""
+    return 1 / (1 - sum(1 / hr for hr in other_hrs))
+
+
+def _assert_probability_closes(opt_params: dict, bet_modes: list) -> None:
+    """Permanent guard against the exact bug this file was rewritten to fix:
+    every mode's fences must have Sigma(1/hr) == 1, or the Rust optimizer
+    silently scales the whole mode's RTP by 1/Sigma(1/hr) with no error and
+    no warning anywhere in the pipeline. A fence with no explicit `hr` is
+    assumed to be a wincap-style (rtp, av_win) fence, whose hr main.rs
+    derives as av_win/(rtp*cost) - the same formula used here."""
+    costs = {bm.get_name(): bm.get_cost() for bm in bet_modes}
+    for mode, params in opt_params.items():
+        cost = costs[mode]
+        total = 0.0
+        for criteria, cond in params["conditions"].items():
+            hr = cond.get("hr")
+            if hr is None:
+                hr = cond["av_win"] / (cond["rtp"] * cost)
+            total += 1 / hr
+        assert abs(total - 1) < 1e-9, (
+            f"{mode}: Sigma(1/hr) = {total} != 1 - the Rust optimizer will silently "
+            f"scale this mode's RTP by {1/total:.4f}x with no error. Fix the fence hrs."
+        )
+
+
 class OptimizationSetup:
     """Amends game_config.opt_params, required by the optimizer + math config."""
 
@@ -54,19 +100,40 @@ class OptimizationSetup:
         self.game_config = game_config
         wincap = game_config.wincap
 
+        # wincap's hr is intentionally omitted everywhere (see module
+        # docstring) - only used here to size its Sigma(1/hr) contribution
+        # when solving each mode's residual fence.
+        base_cost = next(bm.get_cost() for bm in game_config.bet_modes if bm.get_name() == "base")
+        heat_spin_cost = next(bm.get_cost() for bm in game_config.bet_modes if bm.get_name() == "heat_spin")
+        inferno_cost = next(bm.get_cost() for bm in game_config.bet_modes if bm.get_name() == "inferno")
+
+        base_wincap_hr = wincap / (0.001 * base_cost)
+        heat_spin_wincap_hr = wincap / (0.0002 * heat_spin_cost)
+        inferno_wincap_hr = wincap / (0.001 * inferno_cost)
+
+        # Simulation-verified, kept fixed (see module docstring):
+        base_zero_hr = 1 / (1 - 0.495)  # ~49.5% hit frequency -> ~50.5% miss
+        base_freegame_hr = 352  # spec's "any bonus: 1 in 352"
+        heat_spin_zero_hr = 1 / 0.2603  # measured bust rate
+
+        # Solved so each mode's Sigma(1/hr) == 1 exactly, given the above:
+        base_basegame_hr = _solve_residual_hr(base_wincap_hr, base_zero_hr, base_freegame_hr)
+        heat_spin_basegame_hr = _solve_residual_hr(heat_spin_wincap_hr, heat_spin_zero_hr)
+        inferno_freegame_hr = _solve_residual_hr(inferno_wincap_hr)
+
         self.game_config.opt_params = {
             "base": {
                 "conditions": {
                     "wincap": ConstructConditions(
-                        rtp=0.001, av_win=wincap, hr=wincap / 0.001, search_conditions=wincap
+                        rtp=0.001, av_win=wincap, search_conditions=wincap
                     ).return_dict(),
                     "0": ConstructConditions(
-                        rtp=0, av_win=0, hr=1 / (1 - 0.495), search_conditions=0
+                        rtp=0, av_win=0, hr=base_zero_hr, search_conditions=0
                     ).return_dict(),
                     "freegame": ConstructConditions(
-                        rtp=0.617, hr=352, search_conditions={"symbol": "scatter"}
+                        rtp=0.617, hr=base_freegame_hr, search_conditions={"symbol": "scatter"}
                     ).return_dict(),
-                    "basegame": ConstructConditions(rtp=0.359, hr=2.94).return_dict(),
+                    "basegame": ConstructConditions(rtp=0.359, hr=base_basegame_hr).return_dict(),
                 },
                 "scaling": ConstructScaling(
                     [
@@ -90,12 +157,12 @@ class OptimizationSetup:
             "heat_spin": {
                 "conditions": {
                     "wincap": ConstructConditions(
-                        rtp=0.0002, av_win=wincap, hr=wincap / 0.0002, search_conditions=wincap
+                        rtp=0.0002, av_win=wincap, search_conditions=wincap
                     ).return_dict(),
                     "0": ConstructConditions(
-                        rtp=0, av_win=0, hr=1 / 0.2603, search_conditions=0
+                        rtp=0, av_win=0, hr=heat_spin_zero_hr, search_conditions=0
                     ).return_dict(),
-                    "basegame": ConstructConditions(rtp=0.9768, hr=1.54).return_dict(),
+                    "basegame": ConstructConditions(rtp=0.9768, hr=heat_spin_basegame_hr).return_dict(),
                 },
                 "scaling": ConstructScaling(
                     [
@@ -117,17 +184,14 @@ class OptimizationSetup:
             },
             "inferno": {
                 "conditions": {
-                    # Both fences now carry explicit hr, so neither falls into
-                    # the residual branch - traced by hand (see module
-                    # docstring) that leaving wincap's hr unset here, with
-                    # freegame's hr=1.001 the only other fence, collapses
-                    # wincap's effective hit-rate to ~1000 instead of the
-                    # ~50,000,000 implied by its own rtp/av_win pairing.
+                    # No "0" fence exists in inferno at all, so freegame
+                    # itself must be the one solved to make Sigma(1/hr)==1
+                    # (see module docstring / _solve_residual_hr above).
                     "wincap": ConstructConditions(
-                        rtp=0.001, av_win=wincap, hr=wincap / 0.001, search_conditions=wincap
+                        rtp=0.001, av_win=wincap, search_conditions=wincap
                     ).return_dict(),
                     "freegame": ConstructConditions(
-                        rtp=0.976, hr=1.001, search_conditions={"symbol": "scatter"}
+                        rtp=0.976, hr=inferno_freegame_hr, search_conditions={"symbol": "scatter"}
                     ).return_dict(),
                 },
                 "scaling": ConstructScaling(
@@ -151,3 +215,4 @@ class OptimizationSetup:
         }
 
         verify_optimization_input(self.game_config, self.game_config.opt_params)
+        _assert_probability_closes(self.game_config.opt_params, self.game_config.bet_modes)

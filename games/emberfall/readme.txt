@@ -218,12 +218,91 @@ that decision is explicitly not made in this pass; the floor is left as
 specced everywhere per the amendment's instruction, and the comparator gap
 it needs to close is summarized above in that section.
 
-Not done in this pass: a full Rust-optimizer production run (per-mode
-exact RTP-split convergence, e.g. base's 36%/40.86%/12.49%/8.36% split
-across basegame/bonus/super/hidden) and the payout-floor decision (v1.1
-§4). `game_optimization.py` is wired up for base, heat_spin and inferno so
-a follow-up `run_optimization: True` pass has somewhere to start; mystery
-and last_rites are intentionally excluded from it (see above).
+Not done in this pass: the payout-floor decision (v1.1 §4).
+
+#### The production optimizer run - actually executed, and what it found
+
+`run_optimization: True` was run for real (20,000 sims/mode, `cargo run
+--release`, base/heat_spin/inferno). First pass: it completed without
+crashing and without repeating the catastrophic corruption class fixed
+above, but produced real, significant RTP overshoot - inferno landed
+exactly on target (0.9770) but base and heat_spin came out at 1.1522 and
+1.0738 respectively (15-18% and 7% over). `verify_production_rtp.py`
+correctly failed this run rather than passing it.
+
+Root cause (found by tracing the actual Rust weight-assignment code, then
+confirmed numerically against the real output files to 10+ significant
+digits): **within one mode, every fence's `1/hr` must sum to exactly 1** -
+every simulated round falls into exactly one criteria bucket, and nothing
+in the Rust program normalizes this automatically. `main.rs:343` divides
+realized RTP by the fences' combined weight, so if Sigma(1/hr) < 1 the
+whole mode's RTP is silently scaled up by `1/Sigma(1/hr)` - which matched
+the observed overshoot in all three modes to 10+ digits. The earlier fix
+above (giving every "wincap" and "0" fence an explicit `hr`) correctly
+stopped the catastrophic corruption class, but was backwards for THIS
+constraint: it removed every fence from the one branch that's supposed to
+make Sigma(1/hr) hit 1, so nothing did anymore, and final RTP came out as
+whatever `1/Sigma(1/hr)` happened to be for each mode's fence set - not
+Sigma(1/hr) == 1 (a genuine causal relationship, not a lucky-average
+correlation: confirmed across all 10 independently-searched candidate
+distributions per mode, all landing on identical RTP to 10+ decimal
+places - the whole number is fixed by fence math before the stochastic
+search even runs).
+
+Every SDK reference game (0_0_ways, 0_0_cluster, 0_0_lines, 0_0_expwilds)
+handles this by leaving exactly one fence - always "0" - without `hr`, so
+it becomes the sole residual that makes Sigma(1/hr) hit 1. Following that
+convention exactly would have overwritten base's and heat_spin's "0"
+fence hit-rate with whatever's left over (65.70% and 35.06% respectively)
+instead of the ~49.5%/~26.03% this build separately verified by direct
+simulation (matching v1.1 §6 and the spec's own "ours" comparator column
+in v1.1 §4). To keep those verified numbers authoritative, `"0"` stays
+pinned at its own simulation-derived `hr` in this build, and each mode's
+other free-standing fence (`basegame` for base/heat_spin; `freegame` for
+inferno, which has no `"0"` fence at all) has its `hr` solved for instead,
+via a `_solve_residual_hr()` helper, so Sigma(1/hr) == 1 holds exactly
+while every other fence's own already-verified target is untouched.
+`wincap`'s `hr` is omitted everywhere rather than hand-computed: a second,
+independent bug in the earlier fix computed it as `av_win/rtp`, missing a
+`/cost` factor that `main.rs:822` itself applies - which had made
+heat_spin's wincap fence 75x rarer than intended and inferno's 2000x
+rarer (partially, coincidentally, cancelling against the Sigma(1/hr)
+overshoot in inferno's case, which is why inferno's first-pass RTP of
+0.9770 looked exactly right but was actually two errors landing close by
+chance rather than a correct config).
+
+Result after the fix: re-ran the full pipeline (fresh 20,000-sim books,
+`cargo run --release`, format checks). All three modes read **exactly
+0.9770** in the real, optimized lookup tables - confirmed independently
+via `verify_production_rtp.py` (PASSED, exit 0) and by direct SHA-256/
+payout-hash verification. Cross-checked that fixing the aggregate RTP
+didn't disturb the deliberately-preserved fence targets: base's and
+heat_spin's zero-payout weighted probability in the actual lookup tables
+came out to exactly 0.505 and 0.2603, matching the simulation-verified
+values used to pin their `"0"` fences.
+
+Added a permanent guard in `game_optimization.py` (`_assert_probability_
+closes`) that asserts Sigma(1/hr) == 1 for every mode at config-build
+time, specifically so this class of bug fails immediately and loudly on
+any future edit rather than silently shipping a wrong RTP that nothing in
+the pipeline itself checks for (confirmed: neither the Rust program nor
+`optimization_program/run_script.py` compare achieved vs. target RTP
+anywhere, and a corrupted run exits 0 regardless).
+
+Also not done in this pass: the payout-floor decision (v1.1 §4), and two
+side findings surfaced during this investigation that don't affect
+Emberfall's current results but are worth knowing about the shared
+framework: `ConstructParameters`' `min_m2m`/`max_m2m` are never actually
+read by the Rust program's `create_show_pigs` (the values that reach
+`math_config.json` aren't consumed there - the mean-to-median bound that
+IS enforced lives at the fence level in `create_ancestors`, which the
+Python side never populates, so 0.0/10.0 defaults apply); and the
+generic catch-all fence-claiming path (`main.rs:692-700`) has a commented-
+out book-removal that could double-count a "0" fence's books if it were
+ever declared after a catch-all fence in a mode's conditions dict (not
+the case here - every mode above declares "0" first, matching the
+reference convention - but worth preserving that ordering in any future
+edit).
 
 #### Pre-optimizer gate checks (done before any run_optimization: True pass)
 
