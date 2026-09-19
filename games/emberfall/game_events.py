@@ -7,7 +7,15 @@ RELIC_REVEAL = "relicReveal"
 
 
 def update_heat_grid_event(gamestate) -> None:
-    """Send the current per-cell heat state (rung + actual multiplier value)."""
+    """Send the current per-cell heat state (rung + actual multiplier value),
+    plus which cells heated this tumble and which cell each spread from.
+
+    Emitted once per tumble (including the initial reveal), unconditionally -
+    see evaluate_and_apply_heat() in game_executables.py. `grid` is the full
+    resulting state after this tumble's heating step; `heatedCells` and
+    `spreadFrom` are this tumble's deltas only (empty on a tumble with no
+    win), so the frontend can animate new/spread flames distinctly instead of
+    diffing consecutive grid snapshots itself."""
     cfg = gamestate.active_heat_config
     ladder = cfg["ladder"]
     grid = []
@@ -19,11 +27,24 @@ def update_heat_grid_event(gamestate) -> None:
             column.append({"rung": rung, "value": value})
         grid.append(column)
 
+    heated_cells = [
+        {"reel": reel, "row": row} for (reel, row) in gamestate.last_heat_primary
+    ]
+    spread_from = [
+        {
+            "from": {"reel": s["from"][0], "row": s["from"][1]},
+            "to": {"reel": s["to"][0], "row": s["to"][1]},
+        }
+        for s in gamestate.last_heat_spread
+    ]
+
     event = {
         "index": len(gamestate.book.events),
         "type": UPDATE_HEAT_GRID,
         "heatEnabled": cfg["enabled"],
         "grid": grid,
+        "heatedCells": heated_cells,
+        "spreadFrom": spread_from,
     }
     gamestate.book.add_event(event)
 

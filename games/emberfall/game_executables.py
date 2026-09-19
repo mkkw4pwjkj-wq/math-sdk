@@ -12,6 +12,8 @@ class GameExecutables(GameCalculations):
         """Evaluate the current board, apply any resulting heat step, and mark
         winning symbols for removal on the next tumble."""
         self.win_data = self.evaluate_emberfall_ways()
+        self.last_heat_primary = []
+        self.last_heat_spread = []
         if self.win_data["totalWin"] > 0:
             self.record_emberfall_wins()
             self.win_manager.update_spinwin(self.win_data["totalWin"])

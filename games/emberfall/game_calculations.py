@@ -30,6 +30,8 @@ class GameCalculations(Executables):
         self.chain_length = 0
         self.peak_heat_value = 0
         self.spin_heat_granted = 0
+        self.last_heat_primary = []
+        self.last_heat_spread = []
 
     def set_active_heat_config(self, heat_config: dict) -> None:
         """Select which heat ladder/caps govern the spin about to be played."""
@@ -100,7 +102,14 @@ class GameCalculations(Executables):
 
     def apply_win_heat(self, win_positions: list) -> None:
         """Step up heat for winning cells, then spread one rung to each cell's
-        orthogonal neighbours (capped one rung below the cell maximum)."""
+        orthogonal neighbours (capped one rung below the cell maximum).
+
+        Records which cells were heated directly (`last_heat_primary`) and
+        which neighbour cells heated as a result of spreading from which
+        primary cell (`last_heat_spread`), so the book event for this tumble
+        can tell the frontend which flames are new wins vs. which are spread
+        - not just the resulting grid state (spec follow-up: "books currently
+        record heat state" review)."""
         cfg = self.active_heat_config
         if not cfg["enabled"] or not win_positions:
             return
@@ -115,13 +124,18 @@ class GameCalculations(Executables):
                 unique_positions.append(key)
 
         heated_primary = [pos for pos in unique_positions if self._try_increment_cell(pos[0], pos[1], cell_cap)]
+        spread_events = []
 
         neighbour_cap = cell_cap - 1
         if neighbour_cap > 0:
             for (reel, row) in heated_primary:
                 for (nreel, nrow) in self._orthogonal_neighbours(reel, row):
                     if self.heat_rung[nreel][nrow] < neighbour_cap:
-                        self._try_increment_cell(nreel, nrow, neighbour_cap)
+                        if self._try_increment_cell(nreel, nrow, neighbour_cap):
+                            spread_events.append({"from": (reel, row), "to": (nreel, nrow)})
+
+        self.last_heat_primary = heated_primary
+        self.last_heat_spread = spread_events
 
         self.peak_heat_value = max(self.peak_heat_value, max(
             (self.heat_cell_value(r, c) for r in range(self.config.num_reels) for c in range(self.config.num_rows[r])),
