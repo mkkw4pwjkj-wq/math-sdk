@@ -22,7 +22,7 @@ if __name__ == "__main__":
         "heat_spin": int(2e4),
         "inferno": int(2e4),
         "mystery": int(2e4),
-        "max_or_nothing": int(2e4),
+        "last_rites": int(2e4),
     }
 
     run_conditions = {
@@ -60,4 +60,4 @@ if __name__ == "__main__":
         create_stat_sheet(gamestate, custom_keys=custom_keys)
 
     if run_conditions["run_format_checks"]:
-        execute_all_tests(config, excluded_modes=["mystery", "max_or_nothing"])
+        execute_all_tests(config, excluded_modes=["mystery", "last_rites"])

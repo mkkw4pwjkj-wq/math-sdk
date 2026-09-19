@@ -18,8 +18,8 @@ class GameState(GameStateOverride):
         while self.repeat:
             self.reset_book()
 
-            if self.betmode == "max_or_nothing":
-                self.run_max_or_nothing_spin()
+            if self.betmode == "last_rites":
+                self.run_last_rites_spin()
             elif self.betmode == "mystery":
                 self.run_mystery_spin()
             elif self.betmode == "heat_spin":
@@ -46,6 +46,13 @@ class GameState(GameStateOverride):
         force_max_heat = self.get_current_distribution_conditions().get("force_max_heat", False)
         while self.fs < self.tot_fs and not self.wincap_triggered:
             self.update_freespin()
+            # Harness/production self-check (spec amendment v1.1 §5): the
+            # per-spin-index escalation bug that motivated the per-spin
+            # total_cap revert was caused by spin_win never being reset
+            # between spins. update_freespin() must reset it - assert so a
+            # regression here fails loudly instead of silently reproducing
+            # the triangular-sum artifact.
+            assert self.win_manager.spin_win == 0, "spin_win must be reset at the start of each free spin"
             self.reset_heat_grid()
             self.set_active_heat_config(heat_cfg)
             if force_max_heat:
@@ -121,10 +128,12 @@ class GameState(GameStateOverride):
         self.run_freespin()
 
     # ------------------------------------------------------------------
-    # max_or_nothing: single Bernoulli draw, presented as a relic reveal.
+    # last_rites (formerly max_or_nothing): single Bernoulli draw, presented
+    # as a relic reveal. Odds are forced by cost x RTP = wincap x p - see
+    # spec amendment v1.1 §3 ("nothing to choose"); not exposed as a tunable.
     # ------------------------------------------------------------------
-    def run_max_or_nothing_spin(self) -> None:
-        outcome = get_random_outcome({"win": 1, "lose": 14})
+    def run_last_rites_spin(self) -> None:
+        outcome = get_random_outcome({"win": 7.815, "lose": 92.185})
         win_amount = self.config.wincap if outcome == "win" else 0.0
         relic_reveal_event(self, opened=(outcome == "win"), amount=win_amount)
         self.win_manager.update_spinwin(win_amount)

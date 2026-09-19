@@ -9,7 +9,6 @@ class GameStateOverride(GameExecutables):
     def reset_book(self) -> None:
         super().reset_book()
         self.reset_heat_grid()
-        self.reset_feature_heat_budget()
         self.active_heat_config = self.config.heat_configs["none"]
         self.current_tier = None
 

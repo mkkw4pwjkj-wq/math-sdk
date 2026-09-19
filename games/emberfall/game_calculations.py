@@ -14,22 +14,22 @@ class GameCalculations(Executables):
     # ------------------------------------------------------------------
     def reset_heat_grid(self) -> None:
         """Cold board: every cell starts at rung 0. Called at the start of
-        every individual spin (base spin, heat_spin, or each free spin)."""
+        every individual spin (base spin, heat_spin, or each free spin).
+
+        total_cap (when a mode sets one) is a PER-SPIN budget, reset here
+        alongside the grid: heat resets every spin, so does the cap. An
+        earlier build made this cumulative across a whole feature's spins,
+        which was diagnosed as the cause of a strangled tail (heavy early
+        spins exhausting a shared budget, leaving later spins unable to heat
+        at all - see spec amendment v1.1 §1). total_cap defaults to None for
+        every mode; it is a safety rail against runaway feedback within a
+        single spin, not a tuning dial for bringing an average down."""
         self.heat_rung = [[0 for _ in range(self.config.num_rows[reel])] for reel in range(self.config.num_reels)]
         self.burned_symbols = []
         self.tumble_count = 0
         self.chain_length = 0
         self.peak_heat_value = 0
-
-    def reset_feature_heat_budget(self) -> None:
-        """Total heat value ever granted across the *whole* feature (all of
-        its free spins), used against total_cap. This is deliberately not
-        reset by reset_heat_grid(): the visible per-cell grid resets every
-        spin (§11), but total_cap is what keeps a long multi-spin feature
-        from re-earning a fresh full-board heat budget on every single spin -
-        that persistence is what makes the cap "load-bearing" instead of a
-        number a single spin's board can never even approach."""
-        self.feature_heat_granted = 0
+        self.spin_heat_granted = 0
 
     def set_active_heat_config(self, heat_config: dict) -> None:
         """Select which heat ladder/caps govern the spin about to be played."""
@@ -92,10 +92,10 @@ class GameCalculations(Executables):
         new_rung = current_rung + 1
         total_cap = cfg["total_cap"]
         delta = ladder[new_rung - 1] - (ladder[current_rung - 1] if current_rung > 0 else 0)
-        if total_cap is not None and self.feature_heat_granted + delta > total_cap:
+        if total_cap is not None and self.spin_heat_granted + delta > total_cap:
             return False
         self.heat_rung[reel][row] = new_rung
-        self.feature_heat_granted += delta
+        self.spin_heat_granted += delta
         return True
 
     def apply_win_heat(self, win_positions: list) -> None:

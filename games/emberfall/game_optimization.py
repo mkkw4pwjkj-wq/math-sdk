@@ -1,9 +1,9 @@
 """Optimization program setup for Emberfall.
 
 Only the three modes whose payout mix should be shaped by the Rust optimizer
-(base, heat_spin, inferno) are configured here. mystery and max_or_nothing are
+(base, heat_spin, inferno) are configured here. mystery and last_rites are
 authored lotteries / a Bernoulli draw resolved directly in gamestate.py (see
-run_mystery_spin / run_max_or_nothing_spin) and are intentionally excluded -
+run_mystery_spin / run_last_rites_spin) and are intentionally excluded -
 matching the fifty_fifty convention for modes with an exact, hand-set outcome
 distribution that the optimizer would have nothing to search for.
 """

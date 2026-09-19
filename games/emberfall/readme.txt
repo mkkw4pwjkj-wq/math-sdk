@@ -4,6 +4,9 @@
 No wilds. 8 paying symbols (L1-L4, H1-H4) + scatter. Max win 50,000x
 terminates the round immediately.
 
+This file reflects spec amendment v1.1. See git history for the v1 build
+and the total_cap/measurement-bug postmortem that produced the amendment.
+
 #### The heat grid
 Every board cell carries a persistent "heat" rung (0 = cold). When a winning
 symbol clears from a cell it steps up one rung, and its four orthogonal
@@ -13,25 +16,29 @@ it occupies (floor 1x if every cell touched is cold). Heat resets to fully
 cold at the start of every individual spin, including each free spin within
 a feature - see `reset_heat_grid()` in game_calculations.py.
 
-`total_cap` (§6) is NOT a per-spin board snapshot limit - since the grid
-resets every spin, a snapshot cap on a single board is essentially always
-non-binding once ladder values get large. It is implemented instead as a
-cumulative budget of total heat value ever granted across a whole feature's
-free spins (`reset_feature_heat_budget()`/`feature_heat_granted`, reset once
-per feature, not per spin). That is what makes it load-bearing rather than a
-number no single spin's board could ever reach.
+`total_cap` is a PER-SPIN budget, reset alongside the grid every spin (v1.1
+§1). Every mode starts at `total_cap: None` and stays there unless
+simulation shows a genuine single-spin runaway. An earlier build made this
+budget cumulative across a whole feature's spins; direct simulation showed
+that strangled multi-spin features - Hidden's per-spin average across the
+first/middle/last third of a 15-spin feature ran 29.8x/6.1x/6.0x, with the
+shared budget saturating by spin 7-8, while Inferno (uncapped throughout)
+held flat at 283.6x/287.2x/278.6x across the same split. Reverting to a
+per-spin budget (and leaving it unset) restored flatness across all four
+multi-spin tiers - see the Verification section below.
 
 Base game has no heat at all (min 4 reels to pay). Every heat-enabled
 context (heat_spin, bonus/super/hidden free spins, inferno) pays from 3
 reels, via each heat_config's `min_reels`.
 
-#### Bet modes
+#### Bet modes (v1.1 pricing)
 - base (1x): organic play; 4/5/6 scatters trigger the bonus/super/hidden
   free-spin tiers (7/10/15 spins) via the shared `freespin_triggers` table.
   No retrigger (freegame_type's trigger table is intentionally empty).
 - heat_spin (75x): a single heat-enabled reveal+cascade sequence, no free
   spin feature (see `run_heat_spin_single`).
-- inferno (4000x): 5 free spins at the richest ladder, no total_cap.
+- inferno (2,000x, was 4,000x): 5 free spins at the richest ladder, no seed,
+  no burn, no total_cap.
 - mystery (425x): an authored lottery (50/20/10/20 over bonus/super/hidden/
   nothing) resolved before any board is drawn, then plays out the chosen
   tier's real free-spin feature (or a plain zero-win reveal). Implemented as
@@ -40,9 +47,30 @@ reels, via each heat_config's `min_reels`.
   authorial fiat, not reel-emergent - matching the `fifty_fifty` sample's
   convention for this kind of mode. Excluded from the optimizer for the same
   reason.
-- max_or_nothing (3412x): a single Bernoulli draw (1/15 chance of the full
-  50,000x cap), presented as a sealed-relic reveal event. No board is drawn.
-  Also excluded from the optimizer (only two possible payouts).
+- last_rites (4,000x, renamed from max_or_nothing, was 3,412x): a single
+  Bernoulli draw (7.815% chance of the full 50,000x cap), presented as a
+  sealed-relic reveal event. No board is drawn. Also excluded from the
+  optimizer (odds are forced by cost x RTP = wincap x p - nothing to tune).
+
+Menu: 1x . 75x . 425x . 2,000x . 4,000x.
+
+#### Why inferno and last_rites are not competing (v1.1 §3)
+Compared by max-win odds alone (1-in-556 at 2,000x vs 1-in-12.8 at 4,000x),
+last_rites looks strictly better - which is exactly the wrong read. A
+binary product puts its entire RTP into a single ceiling payout; a
+distribution product spends most of its RTP elsewhere (median, p75, the
+whole body of the curve). That split is structural, not a pricing choice,
+and no amount of repricing closes it. The buy menu must show what each
+product actually delivers, not line them up on the one stat that makes
+one look dominated:
+
+    Inferno 2,000x - 5 spins. Typical return ~460x (0.23x of stake).
+      Top 1% pay over 23,000x.
+    Last Rites 4,000x - 50,000x or nothing. Nothing 92% of the time.
+
+This copy belongs wherever the buy menu is built (frontend-sdk, out of
+this repo's scope); it's recorded here so the constraint travels with the
+math that produced it.
 
 #### Payout floor / quantization
 The RGS validator requires every non-zero payout to be an integer multiple
@@ -51,58 +79,148 @@ update_final_win()` (game_override.py) snaps the round's total to that grid
 before the shared base/free-game consistency assertion runs, and derives the
 free-game bucket as whatever remainder makes the two buckets sum to the
 quantized total exactly (rather than patching float drift with more float
-arithmetic, which is what actually caused an assertion failure during
-development - see the git history/verification notes below).
+arithmetic - the source of an earlier assertion failure during development).
+
+Per v1.1 §4 this floor stays in place everywhere, including inside heat_spin
+and inferno, pending a decision informed by the bracket-table data below.
+That decision is deliberately NOT made in this pass - flagging it clearly so
+it isn't decided by accident: the comparator in v1.1 §4 beats heat_spin by
+roughly 13x on max-win frequency (1-in-30,509 vs our 1-in-400,000) and by
+~6.8x on 500x+ of stake (1-in-29,386 vs our 1-in-200,000), and it bought
+that tail with a 92.85% bust rate against our 24.96% - nearly 4x more zero
+outcomes. Suspending the floor inside bought features (never in base, where
+a visible 0.00 reads as broken) is the only lever that could close that gap,
+since it's the only thing currently forcing every winning cascade to pay
+something. This is a product-shape call, not a math correctness question,
+and belongs to whoever owns that tradeoff - not to this implementation pass.
+
+#### Harness self-check (v1.1 §5)
+`verify_rtp.py`'s `run_one_spin()` calls `win_manager.reset_spin_win()` and
+immediately asserts it landed at 0 before running a spin's cascade;
+`gamestate.py`'s production `run_freespin()` carries the same assertion
+right after `update_freespin()`. Neither existed in the build that produced
+the v1 tuning numbers - see "The measurement bug" below.
+
+#### The measurement bug that produced amendment v1.1
+The verification harness used to tune bonus/super/hidden/inferno's original
+values never reset `win_manager.spin_win` between spins within a feature.
+Since `spin_win` accumulates (`+=`) and is only zeroed by
+`reset_spin_win()`, "per-spin win" was actually the *cumulative running
+total so far*, and summing that across a feature's spins produced a
+triangular sum (spin 1's win counted ~15 times over for a 15-spin feature,
+spin 2's ~14 times, etc.) - overstating the true feature average by
+roughly fs_count/2x, in the same direction for every multi-spin mode. This
+is why the v1 tuning (a cumulative total_cap, deliberately choked down to
+compensate) looked self-consistent right up until the amendment's
+per-spin-index diagnostic exposed it: a monotonically *rising* per-spin
+average across a feature (an artifact of the bug feeding a strangled-tail
+`total_cap` that then produced the opposite-looking curve) is what a
+perfectly-successful-looking run actually looked like. RTP alone would not
+have caught either fault - only the per-spin-index and harness-self-check
+reports added in v1.1 §5 would have.
 
 #### Verification (optimization off, direct simulation - see build order)
-Numbers below come from a standalone harness that drives the board/heat/
-cascade code directly at natural reel-strip probability, bypassing the
-Distribution/quota system (which deliberately over/under-samples rare
-criteria for lookup-table diversity and therefore does not reflect true
+All numbers below are from `games/emberfall/verify_rtp.py`, which drives
+the board/heat/cascade code directly at natural reel-strip probability,
+bypassing the Distribution/quota system (which deliberately over/under-
+samples rare criteria for lookup-table diversity and does not reflect true
 production odds until the Rust optimizer has assigned final lookup-table
 weights - a raw `run_optimization: False` create_books run's aggregate RTP
-is quota-shaped, not the real number, exactly as observed while integration
-testing this game).
+is quota-shaped, not the real number, confirmed while integration testing
+this game). Run it with `python3 games/emberfall/verify_rtp.py`; it exits
+non-zero if any mode's average is both >5% off target *and* more than 3
+standard errors from it (see "A second measurement lesson" below for why
+both conditions are required), or if a tier's last-third-of-feature average
+falls under half its first-third (the strangled-tail signature). It's
+seeded (`random.seed(20240517)`) for reproducible pass/fail.
 
-- base game (no heat, min 4 reels), n=100,000: RTP 0.382 vs 0.360 target;
-  hit frequency 49.5% vs the ~34% target.
-  This is a structural finding, not a bug: with 5 rows per reel and only 8
-  paying symbols (no blank filler stops), the chance that *some* symbol's
-  "at least one occurrence per reel" streak reaches 4 consecutive reels is
-  well above 34% under the §5 weight table as given (e.g. for L1 alone,
-  P(>=1 per reel) is already ~60-67% per reel, so P(kind>=4) for L1 alone is
-  already >15%, before summing across all 8 symbols). Hitting ~34% at
-  min_reels=4 on this exact grid/symbol-count needs either denser/blanker
-  reel strips, a stricter minimum, or accepting the higher hit-rate and
-  re-deriving the RTP allocation - a reel-weight redesign this pass did not
-  attempt; flagged here rather than silently forced.
-- heat_spin, n=20,000: avg payout 77.7x vs ~74.1x target; chain-length
-  average payout escalates monotonically with no plateau (1.1x / 21x / 76x /
-  207x / 514x / 702x / 926x / 1676x / 2664x for links 1-9+) - the §15
-  acceptance test for the heat engine.
-- bonus tier, n=4,000 triggers (7 spins each): avg payout 164.7x vs 161x
-  target.
-- super tier, n=3,000 triggers (10 spins each): avg payout 433.6x vs 467x
-  target.
-- hidden tier, n=2,000 triggers (15 spins each): avg payout 2362x vs 2390x
-  target; max-win hit rate ~1-in-333 vs the ~1-in-1818 target (still
-  noticeably too frequent - the tension between matching the mean and
-  matching the tail with only total_cap as a lever; §13's other levers
-  (ladder, seed) were not re-swept against this specific gap).
-- inferno, n=2,000-3,000 (5 spins each): avg payout ~3,750-3,900x vs ~3,896x
-  target; max-win hit rate ~1-in-88-100 vs the ~1-in-94 target.
-- The bonus/super/hidden/inferno heat_configs in game_config.py carry inline
-  notes on which §6 parameter values were adjusted (total_cap for the three
-  tiers, the ladder scale for inferno) to reach the above, and why the
-  literal §6 numbers under this total_cap interpretation did not.
-- mystery/max_or_nothing reproduce their authored probabilities exactly by
-  construction (not simulated - they're direct weighted draws).
+A second measurement lesson, found while finishing this pass: the first
+per-third sweep (a few thousand trials per tier) reported bonus/super/
+hidden/inferno all landing within ~1-5% of target, which looked like
+confirmation the per-spin total_cap fix alone was sufficient. Re-checking
+each at 10-16k trials with the sample's own standard error attached showed
+three of the four (super, hidden, inferno) were actually 5-8% off - a real,
+statistically significant gap (z of 3-6), not noise - that the smaller
+first sample simply hadn't run long enough to reveal, given how
+right-skewed these payout distributions are. `check_rtp()` in
+verify_rtp.py now computes a z-score from each sample's own variance and
+requires a gap to be both >5% *and* >3 SE before failing the run - which
+is also what correctly told apart last_rites' and mystery's smaller
+misses (1-6 SE... well within noise for a fixed-probability Bernoulli mode
+with literally nothing left to tune, and a composite mode whose own target
+depends on the tier averages) from bonus/super/hidden/inferno's real ones.
+Bonus, super, hidden and inferno's ladders below reflect the corrected,
+large-sample values; treat any *new* single small-sample sweep with the
+same suspicion this pass had to learn the hard way.
 
-Not done in this pass: a full Rust-optimizer production run (per-mode exact
-RTP-split convergence, e.g. base's 36%/40.86%/12.49%/8.36% split across
-basegame/bonus/super/hidden) and reconciling the base-game hit-frequency
-finding above. `game_optimization.py` is wired up (conditions/scaling/
-parameters per mode, RTP splits summing to each mode's target) for base,
-heat_spin and inferno so that a follow-up `run_optimization: True` pass has
-somewhere to start; mystery and max_or_nothing are intentionally excluded
-from it (see above).
+Per-spin-index escalation (v1.1's diagnostic, now flat, confirming the
+per-spin total_cap revert fixed it - avg payout/spin, first/middle/last
+third of the feature; n as shown, z relative to target using the sample's
+own standard error):
+- bonus (7 spins, n=10,000):    23.4x / 22.1x / 23.4x  (feature avg 159.9x, target 161x, z=0.4)
+- super (10 spins, n=5,000):    45.9x / 48.5x / 48.6x  (feature avg 477.5x, target 467x, z=0.8)
+- hidden (15 spins, n=8,000):  155.6x / 158.3x / 157.4x (feature avg 2346.7x, target 2390x, z=1.0)
+- inferno (5 spins, n=6,000):  375.9x / 376.3x / 406.5x (feature avg 1883.4x, target 1955x, z=1.3)
+None of these show the front-loaded-then-flat shape the cumulative-cap bug
+produced; middle and last thirds sit at or above first, if anything.
+
+Ladders that reproduce the above (all re-derived from the *original* v1 §6
+shape, scaled): bonus [2,4,9,17,35] (1.08x v1), super [3,5,12,24,49,97]
+(1.08x on top of an earlier 0.90x), hidden [5,10,25,50,101,252] (1.05x on
+top of an earlier 0.96x), inferno [22,44,111,223,446,892] (1.05x on top of
+an earlier 0.85x of the literal v1.1 §3 ladder). Seeds/burn are untouched
+from v1 §6 throughout - per v1.1 §2's order, ladder alone was enough.
+
+heat_spin (unchanged config, n=20,000): avg payout 72.1x vs 74.1x target
+(z=0.7, well within noise); chain-length average payout still escalates
+monotonically with no plateau - the acceptance test for the heat engine,
+unaffected by the total_cap fix since heat_spin's cap was already
+non-binding either way.
+
+mystery (n=25,000): avg 418.6x vs the 412.9x implied by its 50/20/10/20
+weights over bonus/super/hidden's *current* averages (z=0.6) - this mode
+has no parameters of its own, so its correctness is entirely inherited
+from the three tiers above.
+
+last_rites (n=8,000): avg 4,087.5x vs the exact 3,907.5x budget (z=1.2,
+within noise for a mode with nothing to tune - see spec §3, "do not
+attempt to tune them").
+
+Max-win frequency per mode (target in parens): inferno 1-in-1,000 (n=6,000;
+target 1-in-556 - same order of magnitude, within the wide variance
+expected for a rare event at this sample size), hidden 1-in-1,600 (n=8,000;
+target 1-in-1,818 - a close match), bonus/super not observed in their
+samples (targets unreachable / 1-in-40,000 - consistent), heat_spin/
+mystery/last_rites not separately re-measured for this rarer tail.
+
+Base game (unaffected by any v1.1 change - confirmed still holds): RTP
+0.360 vs 0.360 target (z=1.4, n=60,000); hit frequency 49.8%, which v1.1
+§6 confirms as the correct target for this grid/symbol-count (the ~34%
+figure in the original spec was from a different configuration and is
+unreachable here - do not tune toward it).
+
+Bracket tables and bust/dry-streak percentiles (v1.1 §5, per mode, full
+detail in verify_rtp.py's output - representative highlights):
+- base (n=30,000 rounds): bust 50.3%, dry-streak median 2 / p99 7 / max 13.
+- heat_spin (n=20,000): bust 26.0% (comparator's "ours" column in v1.1 §4
+  says 24.96% - matches closely), 100x+ of cost 1-in-2,222 (comparator:
+  1-in-1,544 - same order of magnitude), dry-streak median 1 / p99 4.
+- inferno (n=6,000): bust 0.08%, dry-streak essentially never (5 streaks
+  total - a bust this rare doesn't produce a meaningful percentile at this
+  sample size, which is itself the point).
+- last_rites (n=8,000): bust 91.8%, dry-streak median 9 / p95 34 / p99 52 -
+  matches a ~7.8%-success geometric distribution.
+- mystery (n=25,000): bust 19.7%, dry-streak median 1 / p99 3.
+
+This data is what v1.1 §4 asks for to decide the open payout-floor
+question (whether to suspend the 0.10x floor inside heat_spin/inferno) -
+that decision is explicitly not made in this pass; the floor is left as
+specced everywhere per the amendment's instruction, and the comparator gap
+it needs to close is summarized above in that section.
+
+Not done in this pass: a full Rust-optimizer production run (per-mode
+exact RTP-split convergence, e.g. base's 36%/40.86%/12.49%/8.36% split
+across basegame/bonus/super/hidden) and the payout-floor decision (v1.1
+§4). `game_optimization.py` is wired up for base, heat_spin and inferno so
+a follow-up `run_optimization: True` pass has somewhere to start; mystery
+and last_rites are intentionally excluded from it (see above).

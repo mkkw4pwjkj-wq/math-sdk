@@ -29,7 +29,7 @@ def update_heat_grid_event(gamestate) -> None:
 
 
 def relic_reveal_event(gamestate, opened: bool, amount: float) -> None:
-    """max_or_nothing presentation: a single sealed-relic reveal, binary outcome."""
+    """last_rites presentation: a single sealed-relic reveal, binary outcome."""
     event = {
         "index": len(gamestate.book.events),
         "type": RELIC_REVEAL,
