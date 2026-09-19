@@ -32,6 +32,9 @@ importers:
       pixi-svelte:
         specifier: workspace:*
         version: link:../../packages/pixi-svelte
+      pixi.js:
+        specifier: 8.8.1
+        version: 8.8.1
       svelte:
         specifier: 5.20.5
         version: 5.20.5
