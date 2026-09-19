@@ -29,7 +29,7 @@ if __name__ == "__main__":
         "run_sims": True,
         "run_optimization": False,
         "run_analysis": False,
-        "run_format_checks": False,
+        "run_format_checks": True,
     }
     target_modes = ["base", "heat_spin", "inferno"]
 
