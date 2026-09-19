@@ -1,0 +1,59 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+node_modules
+.pnp
+.pnp.js
+
+# testing
+coverage
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# local env files
+.env
+
+# turbo
+.turbo
+
+#svelte-kit
+.svelte-kit
+build
+out/
+dist
+
+#storybook
+build-storybook.log
+storybook-static
+
+#audiosprite raw resource
+apps/**/src/game/resources/
+apps/**/src/game/sounds/
+
+#vercel
+.vercel
+
+#playwright
+test-results
+apps/**/test-videos/
+apps/**/test-report
+apps/**/test-results
+apps/**/test-result
+
+#allure report
+apps/**/allure-report
+apps/**/allure-results
+
+
+packages/e2e/math-testing/*/*.json
+packages/e2e/math-testing/*/*.png
+packages/e2e/math-testing/*/*.txt
+packages/e2e/math-testing/__pycache__/*
