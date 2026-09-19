@@ -224,3 +224,48 @@ across basegame/bonus/super/hidden) and the payout-floor decision (v1.1
 §4). `game_optimization.py` is wired up for base, heat_spin and inferno so
 a follow-up `run_optimization: True` pass has somewhere to start; mystery
 and last_rites are intentionally excluded from it (see above).
+
+#### Pre-optimizer gate checks (done before any run_optimization: True pass)
+
+**Two-sided production RTP checker.** `verify_rtp.py` is two-sided but
+only checks pre-optimization natural-probability simulation, not the
+actual produced lookup tables. Added `games/emberfall/verify_production_rtp.py`,
+which reads each mode's real `lookUpTable_<mode>_0.csv` and hard-fails
+(non-zero exit) if its calculated RTP is outside +/-5% of target - "any
+mode landing outside tolerance must fail the run, not warn," now checked
+against the actual artifact the RGS would receive, not a simulation of it.
+Confirmed working by running it against the current (pre-optimization)
+tables: base reads 6,255% and heat_spin 87.6% of target, both correctly
+FAIL; inferno happens to read close to target by coincidence (its quota
+split roughly mirrors its true structure) and PASSes - which is exactly
+why this alone isn't sufficient evidence optimization is unnecessary, only
+evidence the checker itself works.
+
+**Optimizer zero/wincap-fence risk - found and fixed, not just checked.**
+Investigated whether this repo's Rust optimizer has the failure mode where
+a fixed-zero fence sharing an unset `hr` with other fences (as in a
+"sibling project" that produced 7.37% and 13,439% RTP against a 97.70%
+target while still exiting 0) is handled or patched. It is not: every
+`"wincap"` and `"0"` fence in this game's original `game_optimization.py`
+left `hr` unset, which `optimization_program/src/main.rs`'s residual
+branch (`if fence.hr == -1.0: fence.hr = 1.0/(1.0 - total_prob)`) resolves
+using a `total_prob` that is computed once and not updated per-fence - so
+when more than one fence relies on it, they silently share the same wrong
+value. Traced by hand for inferno specifically: with only `freegame`
+declaring an `hr` (1.001), `wincap`'s residual `hr` collapses to ~1,000
+instead of the ~50,000,000 implied by its own `rtp=0.001`/`av_win=50000`
+pairing - a corruption in the same failure class as the sibling project's,
+not merely superficially similar. There is no post-solve achieved-vs-
+target RTP check anywhere in the Rust program or its Python wrapper
+(confirmed by reading both); a corrupted result exits 0 exactly as
+described. mystery does NOT have this exposure - it bypasses the optimizer
+entirely (see above), so the "sibling project" structure this maps to in
+Emberfall is base's and heat_spin's `"0"`+`"wincap"` pairs and inferno's
+`wincap` (which shares a mode with only one other, already-`hr`-declared
+fence). Fixed by giving every `wincap` and `"0"` fence an explicit,
+self-consistent `hr` (`av_win/rtp` for wincap; an authored miss-rate for
+`"0"`, e.g. base's ~1.98 from its ~49.5% hit frequency) so none of them
+ever reaches the residual branch - not a Rust change, a config-only fix
+that avoids the unvalidated code path entirely. Verified
+`OptimizationSetup` still passes `verify_optimization_input` after the
+change (RTP sums are unaffected - only `hr` was added).
