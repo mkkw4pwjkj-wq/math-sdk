@@ -13,6 +13,7 @@
 	import { App, Sprite } from 'pixi-svelte';
 
 	import HeatCellStatesDemo from '../components/HeatCellStatesDemo.svelte';
+	import HeatCellFullGridDemo from '../components/HeatCellFullGridDemo.svelte';
 	import HeatCell from '../components/HeatCell.svelte';
 	import { setContext } from '../game/context';
 	import { SYMBOL_SIZE } from '../game/constants';
@@ -32,21 +33,29 @@
 </Story>
 
 {#snippet singleCell(args: { rung: 0 | 1 | 2 | 3 | 4 | 5 | 6 })}
+	{@const height = SYMBOL_SIZE * 0.82}
 	<App>
 		<HeatCell x={40} y={40} rung={args.rung} value={EXAMPLE_VALUES[args.rung]} />
 		<Sprite
-			key="h1.png"
+			key="h2.png"
 			anchor={0.5}
 			x={40 + SYMBOL_SIZE / 2}
 			y={40 + SYMBOL_SIZE / 2}
-			width={SYMBOL_SIZE * 0.9}
-			height={SYMBOL_SIZE * 0.9}
+			width={height}
+			{height}
 		/>
 	</App>
 {/snippet}
 
 <!-- One cell in isolation, rung set via the Storybook control - the "seen
      one at a time, in sequence" counterpart to the side-by-side comparison
-     above (build order step 1 asked for both). -->
+     above (build order step 1 asked for both). h2 (the crown) specifically,
+     since gold-on-amber at the top rungs is the flagged legibility risk. -->
 <Story name="single cell (rung control)" args={{ rung: 0 }} template={singleCell} />
+
+<Story name="full grid, rung 6, real symbols (step 1 re-run)">
+	<App>
+		<HeatCellFullGridDemo />
+	</App>
+</Story>
 
