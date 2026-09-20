@@ -42,9 +42,9 @@ RTP_HIGH = 1.05  # target rather than literally sub-100%, since a mode that
 # cost-normalized fraction, per v1 §15: "RTP targets in optimizer config
 # are cost-normalized fractions, not raw payout x quota").
 MODE_TARGET_RTP = {
-    "base": 0.977,
-    "heat_spin": 0.977,
-    "inferno": 0.977,
+    "base": 0.967,
+    "heat_spin": 0.967,
+    "inferno": 0.967,
     # mystery and last_rites are intentionally excluded: neither goes
     # through the optimizer (see game_optimization.py), so there is no
     # optimized lookup table RTP to gate here - their correctness is

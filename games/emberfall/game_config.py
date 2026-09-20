@@ -27,7 +27,7 @@ class GameConfig(Config):
         self.working_name = "Emberfall"
         self.wincap = 50000.0
         self.win_type = "ways"
-        self.rtp = 0.977
+        self.rtp = 0.967
         self.construct_paths()
 
         # ---- Game dimensions ----
@@ -333,10 +333,33 @@ class GameConfig(Config):
                 auto_close_disabled=False,
                 is_feature=False,
                 is_buybonus=True,
+                # Binary relic draw, forced by quota rather than an internal
+                # random draw (see run_last_rites_spin). A single
+                # quota=1.0 distribution with the win/lose split decided by
+                # an internal get_random_outcome() call left the realized
+                # win frequency as raw Monte Carlo sampling noise, not
+                # something the simulation count controls - e.g. a leftover
+                # n=300 smoke-test run landed on 30 wins (10%) against a
+                # 7.736% target purely by chance. Splitting into two
+                # quota'd distributions makes the sim runner force exactly
+                # int(num_sims * quota) rounds into each bucket
+                # (get_sim_splits in src/state/run_sims.py), which is
+                # deterministic to within 1 simulation rather than subject
+                # to binomial variance.
+                #
+                # quota = target_avg / wincap = (cost * rtp) / wincap
+                #       = (4000 * 0.967) / 50000 = 3868 / 50000 = 0.07736
                 distributions=[
                     Distribution(
-                        criteria="basegame",
-                        quota=1.0,
+                        criteria="win",
+                        quota=0.07736,
+                        win_criteria=self.wincap,
+                        conditions={"reel_weights": {}, "force_wincap": False, "force_freegame": False},
+                    ),
+                    Distribution(
+                        criteria="0",
+                        quota=0.92264,
+                        win_criteria=0.0,
                         conditions={"reel_weights": {}, "force_wincap": False, "force_freegame": False},
                     ),
                 ],

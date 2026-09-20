@@ -131,10 +131,19 @@ class GameState(GameStateOverride):
     # last_rites (formerly max_or_nothing): single Bernoulli draw, presented
     # as a relic reveal. Odds are forced by cost x RTP = wincap x p - see
     # spec amendment v1.1 §3 ("nothing to choose"); not exposed as a tunable.
+    #
+    # Resolved from self.criteria ("win" or "0"), not an internal random
+    # draw: the win/lose split is now forced by the "win"/"0" distribution
+    # quotas in game_config.py, so the simulation runner puts exactly
+    # int(num_sims * quota) rounds into each bucket deterministically.
+    # Drawing internally here (the old approach) left the realized win
+    # frequency as raw binomial sampling noise across the whole simulation
+    # batch, with no mechanism forcing it toward the target regardless of
+    # simulation count.
     # ------------------------------------------------------------------
     def run_last_rites_spin(self) -> None:
-        outcome = get_random_outcome({"win": 7.815, "lose": 92.185})
-        win_amount = self.config.wincap if outcome == "win" else 0.0
-        relic_reveal_event(self, opened=(outcome == "win"), amount=win_amount)
+        opened = self.criteria == "win"
+        win_amount = self.config.wincap if opened else 0.0
+        relic_reveal_event(self, opened=opened, amount=win_amount)
         self.win_manager.update_spinwin(win_amount)
         self.win_manager.update_gametype_wins(self.gametype)

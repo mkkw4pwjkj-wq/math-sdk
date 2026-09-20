@@ -99,7 +99,7 @@ def run_mystery():
 
 
 def run_last_rites():
-    outcome = get_random_outcome({"win": 7.815, "lose": 92.185})
+    outcome = get_random_outcome({"win": 7.736, "lose": 92.264})
     return config.wincap if outcome == "win" else 0.0
 
 
@@ -302,11 +302,18 @@ def main():
     # percent on pure sampling noise (confirmed by re-running at n=80,000,
     # which converged to within 1.2% of target) - a larger n is used here to
     # keep that noise from tripping the two-sided check.
+    # mystery's target_avg is cost x 0.967 (410.98), per the RTP-0.967
+    # update - but nothing about bonus/super/hidden's ladder tuning (which
+    # mystery draws from unmodified, weighted 50/20/10/20) was retuned for
+    # this change, so the mechanistically implied average is still ~412.9x,
+    # same gap (~0.5%) that was already present and accepted against the
+    # old target of 412.9x-vs-cost*0.977=415.225x. RTP_TOLERANCE (+/-5%)
+    # comfortably absorbs this either way.
     mystery_outcomes = [run_mystery() for _ in range(25000)]
-    check_rtp("mystery", mystery_outcomes, 425.0, 412.9, failures)
+    check_rtp("mystery", mystery_outcomes, 425.0, 410.98, failures)
 
     last_rites_outcomes = [run_last_rites() for _ in range(8000)]
-    check_rtp("last_rites", last_rites_outcomes, 4000.0, 3907.5, failures)
+    check_rtp("last_rites", last_rites_outcomes, 4000.0, 3868.0, failures)
 
     print("\n############ Bracket tables + bust/dry-streak (§5) ############")
     base_mode_outcomes = [run_base_mode_round() for _ in range(30000)]

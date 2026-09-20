@@ -48,14 +48,16 @@ reels, via each heat_config's `min_reels`.
   convention for this kind of mode. Excluded from the optimizer for the same
   reason.
 - last_rites (4,000x, renamed from max_or_nothing, was 3,412x): a single
-  Bernoulli draw (7.815% chance of the full 50,000x cap), presented as a
+  Bernoulli draw (7.736% chance of the full 50,000x cap), presented as a
   sealed-relic reveal event. No board is drawn. Also excluded from the
   optimizer (odds are forced by cost x RTP = wincap x p - nothing to tune).
+  Forced by quota (two Distribution entries, "win"/"0"), not an internal
+  random draw - see the RTP 0.967 update section below.
 
 Menu: 1x . 75x . 425x . 2,000x . 4,000x.
 
 #### Why inferno and last_rites are not competing (v1.1 §3)
-Compared by max-win odds alone (1-in-556 at 2,000x vs 1-in-12.8 at 4,000x),
+Compared by max-win odds alone (1-in-556 at 2,000x vs 1-in-12.93 at 4,000x),
 last_rites looks strictly better - which is exactly the wrong read. A
 binary product puts its entire RTP into a single ceiling payout; a
 distribution product spends most of its RTP elsewhere (median, p75, the
@@ -348,3 +350,85 @@ ever reaches the residual branch - not a Rust change, a config-only fix
 that avoids the unvalidated code path entirely. Verified
 `OptimizationSetup` still passes `verify_optimization_input` after the
 change (RTP sums are unaffected - only `hr` was added).
+
+#### RTP dropped to 0.967 (Stake Engine's required figure, was 0.977)
+`self.rtp` in game_config.py: 0.977 -> 0.967. Every bet mode's `rtp=self.rtp`
+field picks this up automatically; the optimizer-driven modes' fence RTP
+fractions do not (they're absolute numbers in game_optimization.py, not
+`self.rtp * fraction`), so each mode's main payout fence was hand-adjusted
+to absorb the 0.010 cut, keeping every other fence's target exactly as
+before:
+
+    mode        fence       old rtp    new rtp    what didn't move
+    base        freegame    0.617      0.607      basegame stays 0.359 flat
+                                                    (36% base allocation -
+                                                    features absorb the cut)
+    heat_spin   basegame    0.9768     0.9668      wincap stays 0.0002
+    inferno     freegame    0.976      0.966       wincap stays 0.001
+
+Every `hr` value (base_zero_hr, base_freegame_hr=352, heat_spin_zero_hr,
+and the three `_solve_residual_hr` results) is untouched - hit-frequency
+and bust-rate targets are orthogonal to a fence's `rtp` fraction, and
+Sigma(1/hr)==1 depends only on `hr`, never `rtp` (see game_optimization.py's
+module docstring). `verify_production_rtp.py`'s MODE_TARGET_RTP updated to
+0.967 for base/heat_spin/inferno to match.
+
+New per-mode target averages (cost x 0.967), prices unchanged:
+
+    mode         cost      old target    new target
+    heat_spin    75x       73.275x       72.53x
+    mystery      425x      415.225x      410.98x  (see caveat below)
+    inferno      2,000x    1,954x        1,934x
+    last_rites   4,000x    3,908x        3,868x
+
+mystery's "new target" is cost x 0.967 for consistency with the other
+modes, but flagging it honestly: mystery's real average is not a directly
+tunable quantity - it's whatever the 50/20/10/20 draw over bonus/super/
+hidden/nothing implies from those tiers' own ladder-tuned averages
+(161x/467x/2,390x), and none of that tuning was touched here. The
+mechanistically implied average was already ~412.9x under the *old* 0.977
+target (vs a naive cost*rtp of 415.225x - a gap the project already
+accepted, per the Verification section above), and remains ~412.9x now -
+coincidentally *closer* to the new 410.98x reference than it was to the
+old one. verify_rtp.py's target_avg was updated to 410.98x to match the
+new reference figure; RTP_TOLERANCE (+/-5%) absorbs the ~0.5% gap either
+way, same margin as before. Retuning bonus/super/hidden's ladders to close
+that gap exactly was not part of this change.
+
+**last_rites RTP measuring 1.03875 - a real bug, not the constant.**
+last_rites was structured as a single `Distribution(criteria="basegame",
+quota=1.0)` with the win/lose split decided by an internal
+`get_random_outcome()` call inside `run_last_rites_spin()` - i.e. every
+one of the N simulated rounds independently drew its own coin flip, with
+nothing forcing the realized win *count* toward the target. Reproduced the
+failure mode directly: a leftover n=300 smoke-test lookup table showed 30
+wins out of 300 (10%) against the intended 7.815%-of-the-time target - a
+~1.4-sigma sampling fluctuation, small in statistical terms but enough to
+move the whole mode's RTP by 28% relative, because last_rites has no
+optimizer pass to correct it afterward (mystery and last_rites are both
+excluded - see above) and no quota forcing the win count at simulation
+time either. This is exactly what "the lookup table is too coarse to
+represent the target probability exactly" means in practice: with only
+one distribution bucket covering 100% of sims, the achievable precision is
+whatever the raw binomial sample happened to land on, not something the
+simulation count or the RTP constant controls.
+
+Fixed by splitting last_rites into two Distribution entries, "win" (quota
+= target_avg/wincap = 3868/50000 = 0.07736) and "0" (quota = 0.92264).
+`get_sim_splits` (src/state/run_sims.py) computes each bucket's simulation
+count as `int(num_sims * quota)` - a deterministic split, not a random
+draw - so the realized win frequency is exact up to one simulation's worth
+of integer rounding, regardless of how small num_sims is. `run_last_rites_
+spin()` now reads `self.criteria` (which bucket this simulated round was
+assigned to) instead of drawing internally. verify_rtp.py's independent
+`run_last_rites()` harness still does an internal random draw by design
+(it exists to verify the target probability itself against a large
+natural sample, not to reproduce the production quota mechanism) -
+updated to the new 7.736%/92.264% split to match.
+
+mystery shares the same single-quota-bucket-plus-internal-draw structure
+(one `Distribution(criteria="basegame", quota=1.0)`, with bonus/super/
+hidden/nothing decided by an internal weighted draw) and is theoretically
+exposed to the same class of issue, just not one this pass found evidence
+of breaking in practice. Not restructured here - out of scope for this
+change, flagged for awareness only.

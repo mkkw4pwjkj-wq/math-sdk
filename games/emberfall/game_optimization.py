@@ -54,6 +54,20 @@ simply omitted everywhere: main.rs:822 derives it correctly - as
 `av_win/(rtp*cost)` - which a hand-computed `av_win/rtp` (the previous
 version of this file) gets wrong for any mode whose cost != 1 (it silently
 made heat_spin's and inferno's wincap 75x/2000x rarer than intended).
+
+--- RTP dropped from 0.977 to 0.967 (Stake Engine's required figure) ---
+
+Only the fence that represents "the mode's main payout mix" absorbs the
+0.010 cut; wincap and "0" fences keep their exact previous rtp fractions,
+and so does base's own "basegame" fence (that 36% base-game allocation is
+held flat by design - see game_config.py's bet_modes comment - so the
+whole cut lands on base's freegame fence instead, 0.617 -> 0.607). Applied
+the same way for the other two optimizer-driven modes: heat_spin's
+basegame 0.9768 -> 0.9668, inferno's freegame 0.976 -> 0.966. Every hr
+value (base_zero_hr, base_freegame_hr, heat_spin_zero_hr, and every
+_solve_residual_hr call) is untouched: hit-frequency/bust-rate targets are
+orthogonal to the rtp fraction on a fence that also declares an explicit
+hr, and Sigma(1/hr) == 1 depends only on hr values, never on rtp.
 """
 
 from optimization_program.optimization_config import (
@@ -131,7 +145,7 @@ class OptimizationSetup:
                         rtp=0, av_win=0, hr=base_zero_hr, search_conditions=0
                     ).return_dict(),
                     "freegame": ConstructConditions(
-                        rtp=0.617, hr=base_freegame_hr, search_conditions={"symbol": "scatter"}
+                        rtp=0.607, hr=base_freegame_hr, search_conditions={"symbol": "scatter"}
                     ).return_dict(),
                     "basegame": ConstructConditions(rtp=0.359, hr=base_basegame_hr).return_dict(),
                 },
@@ -162,7 +176,7 @@ class OptimizationSetup:
                     "0": ConstructConditions(
                         rtp=0, av_win=0, hr=heat_spin_zero_hr, search_conditions=0
                     ).return_dict(),
-                    "basegame": ConstructConditions(rtp=0.9768, hr=heat_spin_basegame_hr).return_dict(),
+                    "basegame": ConstructConditions(rtp=0.9668, hr=heat_spin_basegame_hr).return_dict(),
                 },
                 "scaling": ConstructScaling(
                     [
@@ -191,7 +205,7 @@ class OptimizationSetup:
                         rtp=0.001, av_win=wincap, search_conditions=wincap
                     ).return_dict(),
                     "freegame": ConstructConditions(
-                        rtp=0.976, hr=inferno_freegame_hr, search_conditions={"symbol": "scatter"}
+                        rtp=0.966, hr=inferno_freegame_hr, search_conditions={"symbol": "scatter"}
                     ).return_dict(),
                 },
                 "scaling": ConstructScaling(
