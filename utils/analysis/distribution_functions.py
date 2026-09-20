@@ -71,9 +71,15 @@ def get_distribution_moments(dist: dict, bet_cost: float) -> float:
     for win, weight in dist.items():
         skewness += ((win - av_win) ** 3) * weight
         kurtosis += ((win - av_win) ** 4) * weight
-    skewness /= (standard_dev) ** 3
-    kurtosis /= (standard_dev) ** 4
-    kurtosis -= 3
+    if standard_dev == 0:
+        # Zero-variance distribution (e.g. every simulated payout identical -
+        # plausible on a small, unoptimized sample). Skew/kurtosis are undefined;
+        # report 0 rather than raising.
+        skewness, kurtosis = 0.0, 0.0
+    else:
+        skewness /= (standard_dev) ** 3
+        kurtosis /= (standard_dev) ** 4
+        kurtosis -= 3
 
     return variance, norm_std_dev, skewness, kurtosis
 
@@ -208,4 +214,8 @@ def min_dist_difference(dist: dict):
     for i in range(len(wins) - 2):
         if diff is None or (diff > abs(wins[i + 1]) - wins[i]):
             diff = abs(wins[i + 1]) - wins[i]
+    if diff is None:
+        # Fewer than 3 unique payouts (e.g. a distribution with a single
+        # value) - no adjacent-payout gap exists.
+        return 0
     return int(round(diff * 100))
